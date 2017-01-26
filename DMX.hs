@@ -42,17 +42,22 @@ blue v = Param v
 type Word9 = Word16
 type Address = Word9
 
-data Label (name :: Symbol) a = Label a
+data Labeled (name :: Symbol) a = Labeled a
+
+data Indexed (i :: Nat) a = Indexed [a]
+                            deriving Show
+
+instance (KnownSymbol name, Show a) => Show (Labeled name a) where
+  show (Labeled u) = "Labeled \"" ++ symbolVal (Proxy :: Proxy name) ++ "\" (" ++ show u ++ ")"
 
 data Fixture (params :: [Parameter]) = Fixture
  { address :: Address }
    deriving (Eq, Ord, Read, Show)
 
-data a :+: b = a :+: b
+data a :+: b =
+  a :+: b
    deriving (Eq, Ord, Read, Show)
 infixr :+:
-
--- type ByLabel (name :: Symbol) = ByLabel
 
 type Frame = IOVector Word9
 
@@ -85,24 +90,101 @@ main =
      v' <- Vector.freeze v
      print (Vector.toList v')
 
-class SetParam param path universe where
-  setParam :: Param param -> path -> universe -> Frame -> IO ()
-
-data PATH (p :: Path) = PATH
-
 data Path
   = Here
-  | Labeled Symbol
+  | Label Symbol
   | At Nat
-
-here :: PATH Here
-here = PATH
-
--- labeled :: String -> PATH 
-
+  | P [Path]
 type family ParamNat param params where
   ParamNat (Proxy a) (Proxy (a ': bs)) = 0
   ParamNat (Proxy a) (Proxy (b ': bs)) = 1 + ParamNat (Proxy a) (Proxy bs)
+
+type family SubUniverse (path :: Path) universe :: * where
+  SubUniverse (Label lbl) (Labeled lbl universe) = universe
+  SubUniverse (Label lbl) (Labeled lbl universe :+: universes) = universe
+  SubUniverse (Label lbl) (universe :+: universes) = SubUniverse (Label lbl) universes
+  SubUniverse (At n) (Indexed m universe) = universe
+  SubUniverse (P '[]) universe = universe
+  SubUniverse (P (p : '[])) universe = (SubUniverse p universe)
+  SubUniverse (P (p : ps)) universe = SubUniverse (P ps) (SubUniverse p universe)
+
+class Select (path :: Path) (universe :: *) where
+  select :: Proxy path -> universe -> SubUniverse path universe
+
+instance Select (Label lbl) (Labeled lbl universe) where
+  select _ (Labeled u) = u
+
+instance Select (Label lbl) (Labeled lbl universe :+: universes) where
+  select _ (Labeled u :+: universes) = u
+
+instance ( Select (Label lbl) universes
+         , SubUniverse (Label lbl) (universe :+: universes) ~ SubUniverse (Label lbl) universes) => Select (Label lbl) (universe :+: universes) where
+  select lbl (universe :+: universes) = select lbl universes
+
+instance (SubUniverse (P '[]) universe ~ universe) => Select (P '[]) universe where
+  select _ u = u
+
+instance ( SubUniverse (P '[p]) universe ~ SubUniverse p universe
+         , Select p universe
+         ) =>
+  Select (P '[p]) universe where
+  select _ universe = select (Proxy :: Proxy p) universe
+
+instance ( Select p universe
+         , Select (P ps) (SubUniverse p universe)
+         , SubUniverse ('P ps) (SubUniverse p universe) ~ SubUniverse ('P (p : ps)) universe
+         ) =>
+  Select (P (p : ps)) universe where
+  select _ universe = select (Proxy :: Proxy (P ps)) (select (Proxy :: Proxy p) universe)
+
+instance (KnownNat n, CmpNat m n ~ GT, SubUniverse ('At n) (Indexed m universe) ~ universe) =>
+         Select (At n) (Indexed m universe) where
+  select _ (Indexed fixtures) = fixtures !! (fromIntegral $ natVal (Proxy :: Proxy n))
+
+-- instance (Select (Label lbl) universes) => Select (Label lbl) (universe :+: universes) where
+--  select lbl (u :+: us) =  select (Proxy :: Proxy (Label lbl)) us
+
+  -- undefined -- select lbl us -- undefined -- 1 :: Int -- select lbl us
+    -- undefined :: Int -- SubUniverse (Label lbl) (universe :+: universes)
+    -- select undefined us -- (select lbl us) :: SubUniverse ('Label lbl) (universes)
+
+{-
+class Select (path :: Path) (universe :: *) where
+  type SubUniverse path universe
+  select :: Proxy path -> universe -> (SubUniverse path universe)
+
+instance Select Here universe where
+  type SubUniverse Here universe = universe
+  select _ u = u
+
+instance Select (Label lbl) (Labeled lbl universe) where
+  type SubUniverse (Label lbl) (Labeled lbl universe) = universe
+  select _ (Labeled u) = u
+
+instance Select (Label lbl) (Labeled lbl universe :+: universes) where
+  type SubUniverse (Label lbl) (Labeled lbl universe :+: universes) = universe
+  select _ (Labeled u :+: universes) = u
+
+instance (Select (Label lbl) universes) => Select (Label lbl) (Labeled lbl' universe :+: universes) where
+  type SubUniverse (Label lbl) (Labeled lbl' universe :+: universes) = SubUniverse (Label lbl) universes
+  select lbl (u :+: us) = select lbl us
+
+instance (KnownNat n, CmpNat m n ~ GT) => Select (At n) (Indexed m universe) where
+  type SubUniverse (At n) (Indexed m universe) = universe
+  select at (Indexed us) = us !! (fromIntegral $ natVal (Proxy :: Proxy n))
+
+instance (KnownNat n, CmpNat m n ~ GT) => Select (At n) (Labeled lbl (Indexed m universe)) where
+  type SubUniverse (At n) (Labeled lbl (Indexed m universe)) = universe
+  select at (Labeled (Indexed us)) = us !! (fromIntegral $ natVal (Proxy :: Proxy n))
+-}
+{-
+instance Select (AT 0) (universe :+: universes) where
+  type SubUniverse (AT 0) (universe :+: universes) = universe
+  select _ (u :+: us) = u
+-}
+{- This works until we try to have a list of paths. We need a way to select sub universes.
+class SetParam param path universe where
+  setParam :: Param param -> path -> universe -> Frame -> IO ()
 
 {-
 MVector.replicate 30 0 >>= \frame -> (setParam (green 10) here hex12p1 frame) >> (setParam (red 10) here hex12p1 frame) >> (print =<< Vector.freeze frame)
@@ -130,7 +212,7 @@ instance (SetParam param (PATH Here) fixtureA) =>
 
 instance (SetParam param (PATH Here) fixtureA) =>
          SetParam param (PATH (At 0)) (fixtureA) where
-  setParam p _ (fixtureA ) frame = setParam p (PATH :: PATH Here) fixtureA frame
+  setParam p _ (fixtureA) frame = setParam p (PATH :: PATH Here) fixtureA frame
 
 {-
 MVector.replicate 30 0 >>= \frame -> (setParam (green 10) (PATH :: PATH (At 2)) (ultrabar 9) frame) >> (print =<< Vector.freeze frame)
@@ -139,6 +221,9 @@ instance (CmpNat n 0 ~ GT, SetParam param (PATH (At (n - 1))) fixtures) =>
          SetParam param (PATH (At n)) (fixture :+: fixtures) where
   setParam p _ (_ :+: fixtures) frame = setParam p (PATH :: PATH (At (n - 1))) fixtures frame
 
+instance (SetParam param (PATH (path :+: paths)) universe) where
+setParam p _ universe frame = setParam p (PATH :: 
+-}
 
 -- * Hex12p
 
@@ -147,15 +232,19 @@ type Hex12p_7channel = '[Red, Green, Blue, Amber, White, UV, Master]
 hex12p :: Address -> Fixture Hex12p_7channel
 hex12p addr = Fixture { address = addr }
 
-hex12p1 :: Label "hex12p1" (Fixture Hex12p_7channel)
-hex12p1 = Label $ hex12p 1
+hex12p1 :: Labeled "hex12p1" (Fixture Hex12p_7channel)
+hex12p1 = Labeled $ hex12p 1
+
+type Hex12p1 = Label "hex12p1"
 
 -- * Ultrabar
 
 type Ultrabar_RGB = [Red, Green, Blue]
 
-type Ultrabar_18 = Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB
+type Ultrabar_18 = Indexed 6 (Fixture Ultrabar_RGB)
 
+-- :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB
+{-
 ultrabar :: Address -> Ultrabar_18
 ultrabar addr =
   Fixture { address = addr      } :+:
@@ -164,9 +253,28 @@ ultrabar addr =
   Fixture { address = addr +  9 } :+:
   Fixture { address = addr + 12 } :+:
   Fixture { address = addr + 15 }
+-}
 
-ultrabar1 :: Label "ultrabar1" Ultrabar_18
-ultrabar1 = Label $ ultrabar 9
+ultrabar :: Address -> Ultrabar_18
+ultrabar addr =
+  Indexed $
+   [ Fixture { address = addr      }
+   , Fixture { address = addr +  3 }
+   , Fixture { address = addr +  6 }
+   , Fixture { address = addr +  9 }
+   , Fixture { address = addr + 12 }
+   , Fixture { address = addr + 15 }
+   ]
+
+ultrabar1 :: Labeled "ultrabar1" Ultrabar_18
+ultrabar1 = Labeled $ ultrabar 9
+
+type Ultrabar1 = Label "ultrabar1"
+
+type Universe = Labeled "hex12p1" (Fixture Hex12p_7channel) :+:
+            Labeled "ultrabar1" Ultrabar_18
+universe :: Universe
+universe = hex12p1 :+: ultrabar1
 
 {-
 instance SetParam a (a ': as) where

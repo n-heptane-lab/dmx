@@ -11,14 +11,45 @@
 {-# language ScopedTypeVariables #-}
 module Main where
 
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVar, putTMVar, takeTMVar, tryTakeTMVar)
+import Control.Concurrent.STM.TQueue (TQueue, newTQueue, writeTQueue, readTQueue)
+import Control.Exception (bracket, bracket_)
+import Control.Monad.Trans (MonadIO(..), lift)
+import Control.Wire hiding ((<>))
+import Control.Wire.Core
+import Control.Wire.Unsafe.Event
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
+import Data.Monoid ((<>))
 import Data.Word (Word16)
 import Data.Proxy (Proxy(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Vector.Mutable (IOVector, write)
 import qualified Data.Vector.Mutable as MVector
+import FRP.Netwire.Move (integral)
 import GHC.TypeLits -- (TypeError, ErrorMessage(..), Nat, Symbol, KnownNat(..), natVal, natVal')
 import GHC.Exts
+import Prelude hiding ((.), id, until)
+import System.Environment (getArgs)
+import System.Hardware.Serialport (CommSpeed(CS9600, CS115200), SerialPort, SerialPortSettings(commSpeed), defaultSerialSettings, openSerial, send)
+import System.MIDI as MIDI
+import System.MIDI.Utility as MIDI
+
+-- | FIXME: handle longer than 254
+-- FIXME: handle 0xFF and non-zero termination
+stuff :: ByteString -> ByteString
+stuff b | B.length b > 254 = error "stuff not implemented for ByteStrings longer than 254 bytes. Submit a patch!"
+stuff b = (B.cons 0 (stuff' (B.snoc b 0)))
+  where
+    stuff' :: ByteString -> ByteString
+    stuff' b | B.null b = b
+    stuff' b =
+      case B.span (/= 0) b of
+        (b0, b1) ->
+          (B.cons (fromIntegral $ B.length b0 + 1) b0) <> (stuff' $ B.drop 1 b1)
 
 data Parameter
   = Red
@@ -82,19 +113,119 @@ instance forall a b bs. (Member a bs ~ True, ParamIndex a (Fixture bs)) => Param
 
 -- instance forall a b bs. (Member a bs ~ True, ParamIndex a (Fixture bs)) => ParamIndex a (Fixture (b ': bs)) where
 
+dmxBaud = CS115200
+dmxPort = "/dev/ttyACM0"
+
+nowNow :: MidiLights
+nowNow =
+  periodic 1 . (pure [Print "now"])
+{-
+redBlue :: MidiLights
+--redBlue = for quarter . now . (pure (MVector.replicate 30 0) >>= \v -> pure [F v]) -->
+redBlue = for quarter . now . (arr (\(Event a) -> pure (Print "hello"))) -->
+  redBlue
+-}
+{-  
+  for quarter . now . MVector.replicate 30 0 -->
+  for quarter . now . MVector.replicate 30 1 -->
+  redBlue
+-}
 main :: IO ()
 main =
+  do -- sources <- enumerateSources
+     -- print =<< (mapM getName sources)
+--     destinations <- enumerateDestinations
+--     print =<< (mapM getName destinations)
+--     [numStr] <- getArgs
+--     let num = read numStr
+--         userPortOut = sources!!num
+--         userPortIn  = destinations!!num
+     queue <- atomically newTQueue
+     bracket (createDestination "DMX" (Just $ callback queue)) disposeConnection $ \midiIn ->
+--     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
+       bracket_ (start midiIn) (MIDI.close midiIn) $
+        do runShow queue printOutput beatSession nowNow
+           pure ()
+
+data Action
+    = Tick
+    | ME MidiEvent
+
+data OutputEvent
+  = Print String
+  | F ()
+
+type MidiTimed   = Timed Int ()
+type MidiSession m = Session m MidiTimed
+type MidiWire    = Wire MidiTimed () Identity
+type MidiLights  = Wire MidiTimed () Identity (Event Action) (Event [OutputEvent])
+
+sixteenth, eighth, quarter, whole :: Int
+sixteenth  = 6
+eighth     = 12
+quarter    = 24
+half       = 48
+whole      = 96
+
+beatSession :: (MonadIO m) => MidiSession m
+beatSession =
+  Session $ do
+--    p0 <- liftIO $ atomically $ waitN pos 1
+    return (Timed 0 (), loop)
+  where
+    loop =
+      Session $ do
+--        dp <- liftIO $ atomically $ waitN' pos 1
+--        liftIO $ print dp
+--        let dp = p - p'
+        return (Timed 1 (), loop)
+
+printOutput :: (MonadIO m) => OutputEvent -> m ()
+printOutput (Print str) = liftIO $ putStrLn str
+-- printOutput (F frame) = liftIO $ print . Vector.toList =<< Vector.freeze  frame
+
+runShow :: (MonadIO m) =>
+           TQueue Action
+        -> (OutputEvent -> m ())
+        -> MidiSession m
+        -> MidiLights
+        -> m a
+runShow midi output s0 w0 = loop s0 w0
+  where
+    loop s' w' = do
+      m <- liftIO $ atomically $ readTQueue midi
+--      liftIO $ print m
+      (ds, s) <-
+        case m of
+          (ME (MidiEvent _time SRTClock)) -> stepSession s'
+          _         -> do -- liftIO $ print m
+                          return (Timed 0 (), s')
+      let Identity (mx, w) = stepWire w' ds (Right $ Event m)
+--      (mx, w) <- liftIO $ stepWire w' ds (Right $ Event m)
+      case mx of
+        (Right (Event actions)) ->
+          do mapM_ output actions
+        _                 -> return ()
+      loop s w
+
+callback :: TQueue Action -> MidiEvent -> IO ()
+callback queue midiEvent =
+  do -- print midiEvent
+     atomically $ writeTQueue queue (ME midiEvent)
+{-
   do v <- MVector.new 10
      MVector.set v 0
 --     setParam (Param 12 :: Param 'Green) ultrabar1 v
+--     s <- openSerial dmxPort defaultSerialSettings { commSpeed = dmxBaud }
      v' <- Vector.freeze v
      print (Vector.toList v')
-
+-}
 data Path
   = Here
   | Label Symbol
   | At Nat
   | P [Path]
+
 type family ParamNat param params where
   ParamNat (Proxy a) (Proxy (a ': bs)) = 0
   ParamNat (Proxy a) (Proxy (b ': bs)) = 1 + ParamNat (Proxy a) (Proxy bs)
@@ -108,6 +239,10 @@ type family SubUniverse (path :: Path) universe :: * where
   SubUniverse (P (p : '[])) universe = (SubUniverse p universe)
   SubUniverse (P (p : ps)) universe = SubUniverse (P ps) (SubUniverse p universe)
 
+type family HasLabel lbl universe :: Bool where
+  HasLabel lbl (Labeled lbl u) = True
+  HasLabel lbl u = False
+
 class Select (path :: Path) (universe :: *) where
   select :: Proxy path -> universe -> SubUniverse path universe
 
@@ -117,18 +252,14 @@ instance Select (Label lbl) (Labeled lbl universe) where
 instance Select (Label lbl) (Labeled lbl universe :+: universes) where
   select _ (Labeled u :+: universes) = u
 
-instance ( Select (Label lbl) universes
-         , SubUniverse (Label lbl) (universe :+: universes) ~ SubUniverse (Label lbl) universes) => Select (Label lbl) (universe :+: universes) where
+instance ( HasLabel lbl universe ~ False
+         , Select (Label lbl) universes
+         , SubUniverse (Label lbl) (universe :+: universes) ~ SubUniverse (Label lbl) universes) =>
+         Select (Label lbl) (universe :+: universes) where
   select lbl (universe :+: universes) = select lbl universes
 
 instance (SubUniverse (P '[]) universe ~ universe) => Select (P '[]) universe where
   select _ u = u
-
-instance ( SubUniverse (P '[p]) universe ~ SubUniverse p universe
-         , Select p universe
-         ) =>
-  Select (P '[p]) universe where
-  select _ universe = select (Proxy :: Proxy p) universe
 
 instance ( Select p universe
          , Select (P ps) (SubUniverse p universe)
@@ -141,6 +272,33 @@ instance (KnownNat n, CmpNat m n ~ GT, SubUniverse ('At n) (Indexed m universe) 
          Select (At n) (Indexed m universe) where
   select _ (Indexed fixtures) = fixtures !! (fromIntegral $ natVal (Proxy :: Proxy n))
 
+class SetParam param universe where
+  setParam :: Param param -> universe -> Frame -> IO ()
+
+{-
+MVector.replicate 30 0 >>= \frame -> (setParam (red 10) (select (Proxy :: Proxy Hex12p1) universe) frame) >> (print =<< Vector.freeze frame)
+-}
+instance (KnownNat (ParamNat (Proxy param) (Proxy params))) => SetParam param (Fixture params) where
+  setParam (Param val) (Fixture address) frame =
+    let n = natVal (Proxy :: Proxy (ParamNat (Proxy param) (Proxy params)))
+    in write frame ((fromIntegral address) + (fromIntegral n)) val
+
+instance (SetParam param u) => SetParam param (Labeled lbl u) where
+  setParam p (Labeled u) frame = setParam p u frame
+
+instance (SetParam param u) => SetParam param (Indexed n u) where
+  setParam p (Indexed us) frame = mapM_ (\u -> setParam p u frame) us
+
+instance (SetParam param u, SetParam param us) => SetParam param (u :+: us) where
+  setParam p  (u :+: us) frame =
+    do setParam p u frame
+       setParam p us frame
+
+{-
+setParam :: ( Select path universe
+            ) => Param param -> Proxy path -> universe -> IO ()
+setParam (Param val) _ universe = pure ()
+-}
 -- instance (Select (Label lbl) universes) => Select (Label lbl) (universe :+: universes) where
 --  select lbl (u :+: us) =  select (Proxy :: Proxy (Label lbl)) us
 
@@ -222,7 +380,7 @@ instance (CmpNat n 0 ~ GT, SetParam param (PATH (At (n - 1))) fixtures) =>
   setParam p _ (_ :+: fixtures) frame = setParam p (PATH :: PATH (At (n - 1))) fixtures frame
 
 instance (SetParam param (PATH (path :+: paths)) universe) where
-setParam p _ universe frame = setParam p (PATH :: 
+setParam p _ universe frame = setParam p (PATH ::
 -}
 
 -- * Hex12p
@@ -341,7 +499,7 @@ instance (HasParam (Proxy a) (Fixture bs), HasParams (Proxy as) (Fixture bs)) =>
 
 {-
 class SetParam (Proxy param) (Fixture fixtureParams) where
-  setParam :: Fixture fixtureParams 
+  setParam :: Fixture fixtureParams
 -}
 
 
@@ -377,4 +535,3 @@ data Hex12p = Hex_7Channel
  { hex12p :: RGBAWUV
  }
 -}
-

@@ -4,12 +4,12 @@ let
 
   inherit (nixpkgs) pkgs;
 
-  f = { mkDerivation, base, stdenv, vector }:
+  f = { mkDerivation, base, hmidi, mtl, netwire, stdenv, serialport, vector }:
       mkDerivation {
         pname = "dmx";
         version = "0.1.0.0";
         src = ./.;
-        libraryHaskellDepends = [ base vector ];
+        libraryHaskellDepends = [ base hmidi mtl netwire serialport vector ] ++ (with pkgs.darwin.apple_sdk.frameworks; [ CoreAudio CoreMIDI ]);
         license = stdenv.lib.licenses.bsd3;
       };
 

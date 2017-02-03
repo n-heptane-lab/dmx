@@ -9,6 +9,7 @@
 {-# language PolyKinds #-}
 {-# language UndecidableInstances #-}
 {-# language ScopedTypeVariables #-}
+{-# language Arrows #-}
 module Main where
 
 import Control.Concurrent (forkIO, threadDelay)
@@ -16,14 +17,20 @@ import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVar, putTMVar, takeTMVar, tryTakeTMVar)
 import Control.Concurrent.STM.TQueue (TQueue, newTQueue, writeTQueue, readTQueue)
 import Control.Exception (bracket, bracket_)
+import Control.Monad (foldM)
 import Control.Monad.Trans (MonadIO(..), lift)
 import Control.Wire hiding ((<>))
 import Control.Wire.Core
 import Control.Wire.Unsafe.Event
+import Control.Wire.Switch
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.Char (chr)
+import Data.Function (on)
+import Data.Foldable       (asum, foldMap)
+import Data.List (sort, maximum, groupBy)
 import Data.Monoid ((<>))
-import Data.Word (Word16)
+import Data.Word (Word8, Word16)
 import Data.Proxy (Proxy(..))
 import Data.Vector (Vector)
 import qualified Data.Vector as Vector
@@ -34,15 +41,20 @@ import GHC.TypeLits -- (TypeError, ErrorMessage(..), Nat, Symbol, KnownNat(..), 
 import GHC.Exts
 import Prelude hiding ((.), id, until)
 import System.Environment (getArgs)
-import System.Hardware.Serialport (CommSpeed(CS9600, CS115200), SerialPort, SerialPortSettings(commSpeed), defaultSerialSettings, openSerial, send)
+import System.Hardware.Serialport as Serialport (CommSpeed(CS9600, CS115200), SerialPort, SerialPortSettings(commSpeed), closeSerial, defaultSerialSettings, openSerial, recv, send, flush)
 import System.MIDI as MIDI
 import System.MIDI.Utility as MIDI
 
--- | FIXME: handle longer than 254
+withSerial :: FilePath -> CommSpeed -> (SerialPort -> IO a) -> IO a
+withSerial device speed f =
+  bracket (openSerial device defaultSerialSettings { commSpeed = speed }) (const $ pure ()) {- closeSerial -} f
+
+-- | COBS
+-- FIXME: handle longer than 254
 -- FIXME: handle 0xFF and non-zero termination
-stuff :: ByteString -> ByteString
-stuff b | B.length b > 254 = error "stuff not implemented for ByteStrings longer than 254 bytes. Submit a patch!"
-stuff b = (B.cons 0 (stuff' (B.snoc b 0)))
+stuffBS :: ByteString -> ByteString
+stuffBS b | B.length b > 254 = error "stuff not implemented for ByteStrings longer than 254 bytes. Submit a patch!"
+stuffBS b = (B.cons 0 (stuff' (B.snoc b 0)))
   where
     stuff' :: ByteString -> ByteString
     stuff' b | B.null b = b
@@ -50,6 +62,22 @@ stuff b = (B.cons 0 (stuff' (B.snoc b 0)))
       case B.span (/= 0) b of
         (b0, b1) ->
           (B.cons (fromIntegral $ B.length b0 + 1) b0) <> (stuff' $ B.drop 1 b1)
+
+-- seems hackish
+stuff :: [Word8] -> [Word8]
+stuff b | length b > 254 = error "stuff not implemented for ByteStrings longer than 254 bytes. Submit a patch!"
+stuff b =
+  let stuffed = (stuff' b)
+  in stuffed ++ [0]
+  where
+    stuff' :: [Word8] -> [Word8]
+    stuff' b | null b = b
+    stuff' b =
+      case span (/= 0) b of
+        (b0, b1) ->
+          case b1 of
+            [0] -> ((fromIntegral $ length b0 + 1) : b0 ++ [1])
+            _ -> ((fromIntegral $ length b0 + 1) : b0) <> (stuff' $ drop 1 b1)
 
 data Parameter
   = Red
@@ -61,17 +89,28 @@ data Parameter
   | Master
   deriving (Eq, Ord, Read, Show)
 
-red :: Word9 -> Param Red
-red v = Param v
-
-green :: Word9 -> Param Green
-green v = Param v
-
-blue :: Word9 -> Param Blue
-blue v = Param v
 
 type Word9 = Word16
 type Address = Word9
+type Value = Word8
+
+red :: Value -> Param Red
+red v = Param v
+
+green :: Value -> Param Green
+green v = Param v
+
+blue :: Value -> Param Blue
+blue v = Param v
+
+amber :: Value -> Param Amber
+amber = Param
+
+white :: Value -> Param White
+white = Param
+
+uv :: Value -> Param UV
+uv = Param
 
 data Labeled (name :: Symbol) a = Labeled a
 
@@ -90,9 +129,9 @@ data a :+: b =
    deriving (Eq, Ord, Read, Show)
 infixr :+:
 
-type Frame = IOVector Word9
+type Frame = IOVector Value
 
-data Param (a :: Parameter) = Param Word9
+data Param (a :: Parameter) = Param Value
 
 type family Member (a :: k) (l :: [k]) :: Bool where
   Member a '[] = False
@@ -114,17 +153,99 @@ instance forall a b bs. (Member a bs ~ True, ParamIndex a (Fixture bs)) => Param
 -- instance forall a b bs. (Member a bs ~ True, ParamIndex a (Fixture bs)) => ParamIndex a (Fixture (b ': bs)) where
 
 dmxBaud = CS115200
-dmxPort = "/dev/ttyACM0"
+dmxPort = "/dev/cu.usbmodem836131"
 
 nowNow :: MidiLights
 nowNow =
   periodic 1 . (pure [Print "now"])
-{-
+
+fadeOut :: MidiLights
+fadeOut =
+        proc midi ->
+          do t <- time -< ()
+             v <- integral 0 -< 1 -- (fromIntegral t)
+             q <- (periodic 1 . arr (\v -> pure (F $ setParam (red (floor v)) (select hex12p1 universe)))) &&& (became (> 25)) -< v
+             until -< q
+
+fades = fadeOut --> fades
+
+strobe :: MidiWire Int [OutputEvent] -> MidiWire Int [OutputEvent] -> MidiLights
+strobe on off =
+  let onTime = 10 in
+  periodic 1 .
+    proc _ ->
+     do t <- fmap (`mod` quarter) time -< ()
+        asum [ when (== 0)          >>> on
+             , when (== 0 + onTime) >>> off
+             ] -< t
+onWhite, offWhite :: MidiWire Int [OutputEvent]
+onWhite = pure [(F $ setParam (white 255) (select hex12p1 universe))]
+offWhite = pure [(F $ setParam (white 0) (select hex12p1 universe))]
+
 redBlue :: MidiLights
 --redBlue = for quarter . now . (pure (MVector.replicate 30 0) >>= \v -> pure [F v]) -->
-redBlue = for quarter . now . (arr (\(Event a) -> pure (Print "hello"))) -->
-  redBlue
+redBlue =
+  let dur = quarter + 1 in
+   for dur . now . (pure [F $ setParam (red 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (green 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (blue 255) (select hex12p1 universe)]) -->
+   for dur . now . (pure [F $ setParam (white 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (amber 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (uv 255) (select hex12p1 universe)]) -->
+   redBlue
+
+midiMap :: MidiLights -- MidiWire (Event Action) (Event [OutputEvent])
+midiMap =
+  proc e ->
+    case e of
+      Event me@(ME (MidiEvent _time midiMessage)) ->
+        case midiMessage of
+          (MidiMessage _channel mm) ->
+            case mm of
+              (NoteOn key vel) ->
+                redBlue -< e
+              _ -> returnA -< NoEvent
+          _ -> returnA -< NoEvent
+      _ -> returnA -< NoEvent
+
+midiMode :: MidiWire (Event Action) (Event Action, Event Int)
+midiMode =
+  proc e ->
+    case e of
+      Event me@(ME (MidiEvent _time midiMessage)) ->
+        case midiMessage of
+          (MidiMessage _channel mm) ->
+            case mm of
+              (NoteOn key vel) ->
+                returnA -< (e, Event key)
+              _ -> returnA -< (e, NoEvent)
+          _ -> returnA -< (e, NoEvent)
+
+midiMap2 :: MidiLights
+midiMap2 = midiMode >>> (modes 0 pickMode)
+  where
+    pickMode k =
+      case k of
+        0 -> redBlue
+        1 -> strobe onWhite offWhite
+
+multi :: MidiLights
+multi =
+  proc e ->
+   do rb <- redBlue -< e
+      s <- strobe onWhite offWhite -< e
+      returnA -< mergeOutput s rb
+   
+--    case e of
+{-      
+      Tick -> returnA -< NoEvent
+
+        case midiMessage of
+          (MidiMessage _channel (NoteOn key vel)) ->
+            case key of
+              0 -> returnA -< undefined
 -}
+
 {-  
   for quarter . now . MVector.replicate 30 0 -->
   for quarter . now . MVector.replicate 30 1 -->
@@ -144,8 +265,11 @@ main =
      bracket (createDestination "DMX" (Just $ callback queue)) disposeConnection $ \midiIn ->
 --     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
        bracket_ (start midiIn) (MIDI.close midiIn) $
-        do runShow queue printOutput beatSession nowNow
-           pure ()
+        withSerial dmxPort dmxBaud $ \s ->
+         do frame <- MVector.replicate 6 0
+            runShow queue (serialOutput frame s) beatSession multi
+--        do runShow queue printOutput beatSession redBlue -- nowNow
+--           pure ()
 
 data Action
     = Tick
@@ -153,7 +277,19 @@ data Action
 
 data OutputEvent
   = Print String
-  | F ()
+  | F [(Address, Word8)]
+    deriving Show
+
+mergeOutput :: Event [OutputEvent] -> Event [OutputEvent] -> Event [OutputEvent]
+mergeOutput NoEvent e = e
+mergeOutput e NoEvent = e
+mergeOutput (Event e1) (Event e2) = Event $ mergeOutput' e1 e2
+
+mergeOutput' :: [OutputEvent] -> [OutputEvent] -> [OutputEvent]
+mergeOutput' events1 events2 =
+  let prints = [ Print str | Print str <- events1 ] ++ [ Print str | Print str <- events2 ]
+      fs     = F $ map  maximum $ groupBy ((==) `on` fst) $ sort $ concat $ [ frame | F frame <- events1 ] ++ [ frame | F frame <- events2 ]
+  in (fs : (Print (show fs)) : prints)
 
 type MidiTimed   = Timed Int ()
 type MidiSession m = Session m MidiTimed
@@ -182,7 +318,39 @@ beatSession =
 
 printOutput :: (MonadIO m) => OutputEvent -> m ()
 printOutput (Print str) = liftIO $ putStrLn str
--- printOutput (F frame) = liftIO $ print . Vector.toList =<< Vector.freeze  frame
+printOutput (F frame) = liftIO $ print frame
+
+sendAll :: SerialPort
+        -> ByteString
+        -> IO ()
+sendAll port bs
+  | B.null bs = pure ()
+  | otherwise =
+     do sent <- Serialport.send port bs
+--        putStrLn $ "sent = " ++ show sent
+        if (sent < B.length bs)
+          then sendAll port (B.drop sent bs)
+          else pure ()
+
+serialOutput :: (MonadIO m) => Frame -> SerialPort -> OutputEvent -> m ()
+serialOutput frame port outputEvent = liftIO $
+  case outputEvent of
+    (Print str) -> putStrLn str
+    (F params)   ->
+      do -- print params
+         frame <- MVector.replicate 6 0
+         mapM_ (\(addr, val) -> write frame (fromIntegral (addr - 1)) val) params
+         vals <- Vector.toList <$> Vector.freeze frame
+         -- print vals
+         -- print (B.length (B.pack $ stuff vals))
+         -- print (stuff vals)
+
+         sendAll port (B.pack $ stuff vals)
+--         Serialport.flush port
+--         bs <- Serialport.recv port 100
+--         putStrLn $ "recv: " ++ show bs
+
+         pure ()
 
 runShow :: (MonadIO m) =>
            TQueue Action
@@ -249,10 +417,11 @@ class Select (path :: Path) (universe :: *) where
 instance Select (Label lbl) (Labeled lbl universe) where
   select _ (Labeled u) = u
 
-instance Select (Label lbl) (Labeled lbl universe :+: universes) where
+instance {-# OVERLAPPING #-}  Select (Label lbl) (Labeled lbl universe :+: universes) where
   select _ (Labeled u :+: universes) = u
 
-instance ( HasLabel lbl universe ~ False
+instance {-# OVERLAPPING #-}
+         ( HasLabel lbl universe ~ False
          , Select (Label lbl) universes
          , SubUniverse (Label lbl) (universe :+: universes) ~ SubUniverse (Label lbl) universes) =>
          Select (Label lbl) (universe :+: universes) where
@@ -273,26 +442,27 @@ instance (KnownNat n, CmpNat m n ~ GT, SubUniverse ('At n) (Indexed m universe) 
   select _ (Indexed fixtures) = fixtures !! (fromIntegral $ natVal (Proxy :: Proxy n))
 
 class SetParam param universe where
-  setParam :: Param param -> universe -> Frame -> IO ()
+  setParam :: Param param -> universe -> [(Address, Value)]
 
 {-
 MVector.replicate 30 0 >>= \frame -> (setParam (red 10) (select (Proxy :: Proxy Hex12p1) universe) frame) >> (print =<< Vector.freeze frame)
 -}
 instance (KnownNat (ParamNat (Proxy param) (Proxy params))) => SetParam param (Fixture params) where
-  setParam (Param val) (Fixture address) frame =
-    let n = natVal (Proxy :: Proxy (ParamNat (Proxy param) (Proxy params)))
+  setParam (Param val) (Fixture address) =
+        let n = natVal (Proxy :: Proxy (ParamNat (Proxy param) (Proxy params)))
+        in [(address + fromIntegral n, val)]
+{-    
     in write frame ((fromIntegral address) + (fromIntegral n)) val
-
+-}
 instance (SetParam param u) => SetParam param (Labeled lbl u) where
-  setParam p (Labeled u) frame = setParam p u frame
+  setParam p (Labeled u) = setParam p u
 
 instance (SetParam param u) => SetParam param (Indexed n u) where
-  setParam p (Indexed us) frame = mapM_ (\u -> setParam p u frame) us
+  setParam p (Indexed us) = concatMap (\u -> setParam p u) us
 
 instance (SetParam param u, SetParam param us) => SetParam param (u :+: us) where
-  setParam p  (u :+: us) frame =
-    do setParam p u frame
-       setParam p us frame
+  setParam p  (u :+: us) =
+    setParam p u ++ setParam p us
 
 {-
 setParam :: ( Select path universe
@@ -385,15 +555,18 @@ setParam p _ universe frame = setParam p (PATH ::
 
 -- * Hex12p
 
-type Hex12p_7channel = '[Red, Green, Blue, Amber, White, UV, Master]
+type Hex12p_7channel = '[Red, Green, Blue, White, Amber, UV, Master]
 
 hex12p :: Address -> Fixture Hex12p_7channel
 hex12p addr = Fixture { address = addr }
 
-hex12p1 :: Labeled "hex12p1" (Fixture Hex12p_7channel)
-hex12p1 = Labeled $ hex12p 1
+def_hex12p1 :: Labeled "hex12p1" (Fixture Hex12p_7channel)
+def_hex12p1 = Labeled $ hex12p 1
 
 type Hex12p1 = Label "hex12p1"
+
+hex12p1 :: Proxy Hex12p1
+hex12p1 = Proxy
 
 -- * Ultrabar
 
@@ -432,7 +605,7 @@ type Ultrabar1 = Label "ultrabar1"
 type Universe = Labeled "hex12p1" (Fixture Hex12p_7channel) :+:
             Labeled "ultrabar1" Ultrabar_18
 universe :: Universe
-universe = hex12p1 :+: ultrabar1
+universe = def_hex12p1 :+: ultrabar1
 
 {-
 instance SetParam a (a ': as) where

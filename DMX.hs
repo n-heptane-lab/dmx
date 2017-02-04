@@ -29,6 +29,9 @@ import Data.Char (chr)
 import Data.Function (on)
 import Data.Foldable       (asum, foldMap)
 import Data.List (sort, maximum, groupBy)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Traversable (mapAccumR, mapM)
 import Data.Monoid ((<>))
 import Data.Word (Word8, Word16)
 import Data.Proxy (Proxy(..))
@@ -39,7 +42,7 @@ import qualified Data.Vector.Mutable as MVector
 import FRP.Netwire.Move (integral)
 import GHC.TypeLits -- (TypeError, ErrorMessage(..), Nat, Symbol, KnownNat(..), natVal, natVal')
 import GHC.Exts
-import Prelude hiding ((.), id, until)
+import Prelude hiding ((.), id, until, mapM)
 import System.Environment (getArgs)
 import System.Hardware.Serialport as Serialport (CommSpeed(CS9600, CS115200), SerialPort, SerialPortSettings(commSpeed), closeSerial, defaultSerialSettings, openSerial, recv, send, flush)
 import System.MIDI as MIDI
@@ -155,6 +158,304 @@ instance forall a b bs. (Member a bs ~ True, ParamIndex a (Fixture bs)) => Param
 dmxBaud = CS115200
 dmxPort = "/dev/cu.usbmodem836131"
 
+
+sendAll :: SerialPort
+        -> ByteString
+        -> IO ()
+sendAll port bs
+  | B.null bs = pure ()
+  | otherwise =
+     do sent <- Serialport.send port bs
+--        putStrLn $ "sent = " ++ show sent
+        if (sent < B.length bs)
+          then sendAll port (B.drop sent bs)
+          else pure ()
+
+-- various input events
+data Input
+    = Tick
+    | ME MidiEvent
+
+data OutputEvent
+  = Print String
+  | F [(Address, Word8)]
+    deriving Show
+
+type Output = [(Address, Word8)]
+type MidiTimed   = Timed Int ()
+type MidiSession m = Session m MidiTimed
+type MidiWire    = Wire MidiTimed () Identity
+type MidiLights  = Wire MidiTimed () Identity (Event Input) Output
+
+redBlue :: MidiLights
+redBlue =
+  let dur = quarter + 1 in
+  for dur . pure (setParam (red 255) (select hex12p1 universe)) -->
+  for dur . pure (setParam (blue 255) (select hex12p1 universe)) -->
+  redBlue
+
+
+pulsar :: MidiLights
+pulsar =
+  (for 255 .
+     proc midi ->
+       do t <- time -< ()
+          returnA -< (setParam (green (fromIntegral t)) (select hex12p1 universe))) -->
+  (for 255 .
+     proc midi ->
+       do t <- time -< ()
+          returnA -< (setParam (green (fromIntegral (255 - t))) (select hex12p1 universe))) -->
+  pulsar
+
+strobe :: MidiLights
+strobe  =
+  let onTime = 1 in
+  proc _ ->
+    do t <- fmap (`mod` eighth) time -< ()
+       returnA -< if t == 0
+                  then setParam (white 255) (select hex12p1 universe)
+                  else []
+
+type Midi2Seq = Map Int MidiLights
+
+foldLights :: [MidiLights] -> MidiLights
+foldLights [] = arr (const [])
+foldLights (m:ms) = (m &&& foldLights ms) >>> (arr $ uncurry mergeParams)
+
+updateMap :: Midi2Seq -> MidiWire (Event Input) (Event Input, Event Midi2Seq)
+updateMap m2s =
+  proc e ->
+    do let m2s' = case e of
+               (Event (ME (MidiEvent _time midiMessage))) ->
+                 case midiMessage of
+                   (MidiMessage _channel mm) ->
+                     case mm of
+                       (NoteOn key vel) ->
+                         case key of
+                           0 -> Map.insert 0 redBlue m2s
+                           1 -> Map.insert 1 strobe m2s
+       returnA -< (e, Event m2s')
+
+{-
+doLights :: MidiWire (Event Input, Event Midi2Seq) Output
+doLights = modes Map.empty $ \m2s -> foldLights (Map.elems m2s)
+-}
+{-
+midiModes ::
+    (Monad m, Ord k)
+    => k  -- ^ Initial mode.
+    -> (k -> Wire s e m a b)  -- ^ Select wire for given mode.
+    -> Wire s e m (a, Event k) b
+midiModes m0 select = loop M.empty m0 (select m0)
+    where
+    loop ms' m' w'' =
+        WGen $ \ds mxev' ->
+            case mxev' of
+              Left _ -> do
+                  (mx, w) <- stepWire w'' ds (fmap fst mxev')
+                  return (mx, loop ms' m' w)
+              Right (x', ev) -> do
+                  let (ms, m, w') = switch ms' m' w'' ev
+                  (mx, w) <- stepWire w' ds (Right x')
+                  return (mx, loop ms m w)
+
+    switch ms' m' w' NoEvent = (ms', m', w')
+    switch ms' m' w' (Event m) =
+        let ms = M.insert m' w' ms' in
+        case M.lookup m ms of
+          Nothing -> (ms, m, select m)
+          Just w  -> (M.delete m ms, m, w)
+-}
+
+
+midiModes :: MidiLights
+midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
+    where
+    loop ms'' =
+        WGen $ \ds mxev' ->
+            case mxev' of
+              Left _ -> do
+                let ms' = ms''
+                msx <- mapM (\(k,w') -> stepWire w' ds mxev' >>= \w -> pure (k,w)) (Map.toAscList ms')
+                let mergeE (Left l) (Left _) = Left l
+                    mergeE (Left _) (Right p) = Right p
+                    mergeE (Right p) (Left _) = Right p
+                    mergeE (Right p1) (Right p2) = Right $ mergeParams p1 p2
+                    (mx, ws) = mapAccumR (\e (k, (e', w)) -> (mergeE e e', (k, w))) (Right []) msx
+--                  (mx, w) <- mapAccumR (\mx w'' -> stepWire w'' ds mxev'
+                return (mx, loop (Map.fromList ws))
+              Right ev -> do
+                let ms' = switch ms'' ev
+                msx <- mapM (\(k,w') -> stepWire w' ds mxev' >>= \w -> pure (k,w)) (Map.toAscList ms')
+                let mergeE (Left l) (Left _) = Left l
+                    mergeE (Left _) (Right p) = Right p
+                    mergeE (Right p) (Left _) = Right p
+                    mergeE (Right p1) (Right p2) = Right $ mergeParams p1 p2
+                    (mx, ws) = mapAccumR (\e (k, (e', w)) -> (mergeE e e', (k, w))) (Right []) msx
+--                  (mx, w) <- mapAccumR (\mx w'' -> stepWire w'' ds mxev'
+                return (mx, loop (Map.fromList ws))
+
+    switch ms' NoEvent = ms'
+    switch ms' (Event input) =
+      let ms =
+            case input of
+              (ME (MidiEvent _time midiMessage)) ->
+                case midiMessage of
+                  (MidiMessage _channel mm) ->
+                    case mm of
+                      (NoteOn key vel) ->
+                        case key of
+                          0 -> (Map.insert 0 redBlue ms')
+                          1 -> (Map.insert 1 strobe ms')
+                          _ -> ms'
+                      (NoteOff key vel) -> Map.delete key ms'
+                      _ -> ms'
+                  _ -> ms'
+              _ -> ms'
+      in ms
+
+{-
+              Right ev -> do
+                  let (ms, w') = switch ms' w'' ev
+                  (mx, w) <- stepWire w' ds mxev' -- (Right ev)
+                  return (mx, loop ms w)
+
+    switch ms' w' NoEvent = (ms', w')
+    switch ms' w' (Event input) =
+      case input of
+            (ME (MidiEvent _time midiMessage)) ->
+              case midiMessage of
+                (MidiMessage _channel mm) ->
+                  case mm of
+                    (NoteOn key vel) ->
+                      case key of
+--                       0 -> (Map.insert 0 redBlue ms')
+--                        1 -> (Map.insert 1 strobe ms')
+                        _ -> (ms', w')
+                    _ -> (ms', w')
+                _ -> (ms', w')
+--      in (ms, foldLights (Map.elems ms))
+-}
+
+{-
+This solution does not work because any time an Event is triggered it restarts the wires.
+
+midiModes :: MidiLights
+midiModes = loop (Map.fromList [(0,redBlue)]) redBlue
+    where
+    loop ms' w'' =
+        WGen $ \ds mxev' ->
+            case mxev' of
+              Left _ -> do
+                  (mx, w) <- stepWire w'' ds mxev'
+                  return (mx, loop ms' w)
+
+              Right ev -> do
+                  let (ms, w') = switch ms' w'' ev
+                  (mx, w) <- stepWire w' ds mxev' -- (Right ev)
+                  return (mx, loop ms w)
+
+    switch ms' w' NoEvent = (ms', w')
+    switch ms' w' (Event input) =
+      case input of
+            (ME (MidiEvent _time midiMessage)) ->
+              case midiMessage of
+                (MidiMessage _channel mm) ->
+                  case mm of
+                    (NoteOn key vel) ->
+                      case key of
+--                       0 -> (Map.insert 0 redBlue ms')
+--                        1 -> (Map.insert 1 strobe ms')
+                        _ -> (ms', w')
+                    _ -> (ms', w')
+                _ -> (ms', w')
+--      in (ms, foldLights (Map.elems ms))
+{-    
+    switch ms' m' w' (Event m) =
+        let ms = M.insert m' w' ms' in
+        case M.lookup m ms of
+          Nothing -> (ms, m, select m)
+          Just w  -> (M.delete m ms, m, w)
+-}
+-}
+
+
+
+-- updateMap' :: Midi2Seq -> MidiWire (Event Input) (Midi2Seq, Event Input)
+{-
+updateMap' m2s =
+  proc e ->
+  do o <- (let mmm =
+                  (case e of
+                    (Event (ME (MidiEvent _time midiMessage))) ->
+                      case midiMessage of
+                        (MidiMessage _channel mm) ->
+                          case mm of
+                            (NoteOn key vel) ->
+                              case key of
+                               0 -> Map.insert 0 redBlue m2s
+                               1 -> Map.insert 1 strobe m2s)
+             in mmm) -< ()
+
+       returnA -< o
+-}
+{-
+    let m2s' = case e of
+               (Event (ME (MidiEvent _time midiMessage))) ->
+                 case midiMessage of
+                   (MidiMessage _channel mm) ->
+                     case mm of
+                       (NoteOn key vel) ->
+                         case key of
+                           0 -> Map.insert 0 redBlue m2s
+                           1 -> Map.insert 1 strobe m2s
+    in foldLights (Maps.elem m2s')
+--       returnA -< (m2s', e)
+-}
+midi2seq :: MidiWire (Midi2Seq, Event Input) Output
+midi2seq =
+  proc (m2s, e) ->
+    do -- app -< (foldLights (Map.elems m2s),e)
+       returnA -<  undefined
+--   do o <- (app $ arr (\(m2s, e) -> (foldLights (Map.elems m2s), e))) -< (m2s, e)
+--   do o <- (arr (\_ -> undefined) >>> app) -< (m2s, e)
+
+{-
+midi2seq :: Midi2Seq -> MidiLights
+midi2seq m2s =
+       o <- foldLights (Map.elems m2s') -< e
+       returnA -< o
+-}
+       
+
+{-
+midi2seq = loop $
+  proc (e, m2s) ->
+    do let m2s' =
+             case e of
+               (Event (ME (MidiEvent _time midiMessage))) ->
+                 case midiMessage of
+                   (MidiMessage _channel mm) ->
+                     case mm of
+                       (NoteOn key vel) ->
+                         case key of
+                           0 -> Map.insert 0 redBlue m2s
+                           1 -> Map.insert 1 strobe m2s
+       s <- ( \(e, m2s) -> foldLights (Map.elems m2s')) -< (e, m2s')
+       returnA -< (s, m2s')
+-}
+{-  
+  let onTime = 1 in
+    proc _ ->
+     do t <- fmap (`mod` quarter) time -< ()
+        returnA -< for 1 . setParam (white 255) (select hex12p1 universe)
+{-
+        asum [ when (== 0)          >>> setParam (white 255) (select hex12p1 universe)
+--             , when (== 0 + onTime) >>> []
+             ] -< t
+  -}
+-}
+{-
 nowNow :: MidiLights
 nowNow =
   periodic 1 . (pure [Print "now"])
@@ -245,12 +546,20 @@ multi =
             case key of
               0 -> returnA -< undefined
 -}
+-}
 
 {-  
   for quarter . now . MVector.replicate 30 0 -->
   for quarter . now . MVector.replicate 30 1 -->
   redBlue
 -}
+multi :: MidiLights
+multi =
+   proc e ->
+    do rb <- redBlue -< e
+       p  <- strobe  -< e
+       returnA -< mergeParams rb p
+
 main :: IO ()
 main =
   do -- sources <- enumerateSources
@@ -267,18 +576,10 @@ main =
        bracket_ (start midiIn) (MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
          do frame <- MVector.replicate 6 0
-            runShow queue (serialOutput frame s) beatSession multi
+            runShow queue (serialOutput frame s) beatSession midiModes
 --        do runShow queue printOutput beatSession redBlue -- nowNow
 --           pure ()
 
-data Action
-    = Tick
-    | ME MidiEvent
-
-data OutputEvent
-  = Print String
-  | F [(Address, Word8)]
-    deriving Show
 
 mergeOutput :: Event [OutputEvent] -> Event [OutputEvent] -> Event [OutputEvent]
 mergeOutput NoEvent e = e
@@ -291,10 +592,9 @@ mergeOutput' events1 events2 =
       fs     = F $ map  maximum $ groupBy ((==) `on` fst) $ sort $ concat $ [ frame | F frame <- events1 ] ++ [ frame | F frame <- events2 ]
   in (fs : (Print (show fs)) : prints)
 
-type MidiTimed   = Timed Int ()
-type MidiSession m = Session m MidiTimed
-type MidiWire    = Wire MidiTimed () Identity
-type MidiLights  = Wire MidiTimed () Identity (Event Action) (Event [OutputEvent])
+mergeParams :: [(Address, Word8)] -> [(Address, Word8)] -> [(Address, Word8)]
+mergeParams params1 params2 =
+  map maximum $ groupBy ((==) `on` fst) $ sort $ params1 ++ params2
 
 sixteenth, eighth, quarter, whole :: Int
 sixteenth  = 6
@@ -320,23 +620,13 @@ printOutput :: (MonadIO m) => OutputEvent -> m ()
 printOutput (Print str) = liftIO $ putStrLn str
 printOutput (F frame) = liftIO $ print frame
 
-sendAll :: SerialPort
-        -> ByteString
-        -> IO ()
-sendAll port bs
-  | B.null bs = pure ()
-  | otherwise =
-     do sent <- Serialport.send port bs
---        putStrLn $ "sent = " ++ show sent
-        if (sent < B.length bs)
-          then sendAll port (B.drop sent bs)
-          else pure ()
-
-serialOutput :: (MonadIO m) => Frame -> SerialPort -> OutputEvent -> m ()
-serialOutput frame port outputEvent = liftIO $
+serialOutput :: (MonadIO m) => Frame -> SerialPort -> Output -> m ()
+serialOutput frame port params = liftIO $
+{-
   case outputEvent of
     (Print str) -> putStrLn str
     (F params)   ->
+-}
       do -- print params
          frame <- MVector.replicate 6 0
          mapM_ (\(addr, val) -> write frame (fromIntegral (addr - 1)) val) params
@@ -353,8 +643,8 @@ serialOutput frame port outputEvent = liftIO $
          pure ()
 
 runShow :: (MonadIO m) =>
-           TQueue Action
-        -> (OutputEvent -> m ())
+           TQueue Input
+        -> (Output -> m ())
         -> MidiSession m
         -> MidiLights
         -> m a
@@ -371,12 +661,12 @@ runShow midi output s0 w0 = loop s0 w0
       let Identity (mx, w) = stepWire w' ds (Right $ Event m)
 --      (mx, w) <- liftIO $ stepWire w' ds (Right $ Event m)
       case mx of
-        (Right (Event actions)) ->
-          do mapM_ output actions
+        (Right out) ->
+          do output out
         _                 -> return ()
       loop s w
 
-callback :: TQueue Action -> MidiEvent -> IO ()
+callback :: TQueue Input -> MidiEvent -> IO ()
 callback queue midiEvent =
   do -- print midiEvent
      atomically $ writeTQueue queue (ME midiEvent)
@@ -708,3 +998,6 @@ data Hex12p = Hex_7Channel
  { hex12p :: RGBAWUV
  }
 -}
+
+
+

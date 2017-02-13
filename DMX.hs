@@ -105,7 +105,6 @@ data Parameter
   | GBStrobeSpeed
   deriving (Eq, Ord, Read, Show)
 
-
 type Word9 = Word16
 type Address = Word9
 type Value = Word8
@@ -169,6 +168,19 @@ derbyCon v =
     (DerbyConRedGreenBlue) -> Param $ 175
     (DerbyConAuto1)        -> Param $ 200
     (DerbyConAuto2)        -> Param $ 225
+
+data GBDerbyStrobeVal
+  = DerbyStrobeOff
+  | DerbyStrobeRate Word8 -- ^ 0 to 229
+  | DerbyStrobeSound
+    deriving Show
+
+derbyStrobe :: GBDerbyStrobeVal -> Param GBDerbyStrobe
+derbyStrobe v =
+  case v of
+    DerbyStrobeOff    -> Param 0
+    DerbyStrobeRate n -> Param $ 10 + min n 229
+    DerbyStrobeSound  -> Param $ 240
 
 data GBDerbyRotationVal
   = DerbyStop
@@ -631,6 +643,10 @@ type Def_GB_Derby_2 = Labeled "gb_derby_2" (Fixture Derby)
 def_gb_derby_2 :: Address -> Def_GB_Derby_2
 def_gb_derby_2 = Labeled . Fixture
 
+type GB_Derby_2 = Label "gb_derby_2"
+
+gb_derby_2 :: Proxy GB_Derby_2
+gb_derby_2 = Proxy
 
 type Def_GB_Laser = Labeled "gb_laser" (Fixture Laser)
 
@@ -710,9 +726,9 @@ gbRedBlue =
          m2  <- pure $ setParam (parCon $ ParConRGB 127) par2 -< e
          returnA -< mergeParamsL [m1, m2, rb1, rb2]
 
-gbDerbys' :: MidiLights
-gbDerbys' =
-  let db1 = (select gb_derby_1 (select gb_1 universe))
+-- gbDerbys' :: MidiLights
+gbDerbys' db1 =
+  let -- db1 = (select gb_derby_1 (select gb_1 universe))
       dur = quarter + 1
   in -- for dur . arr (\_ -> setParam (derbyCon DerbyConRed) db1 ++ setParam (derbyRotation (DerbyClockwise 3)) db1) -->
      for dur . pure (setParam (derbyCon DerbyConRed) db1) -->
@@ -722,21 +738,64 @@ gbDerbys' =
      for dur . pure (setParam (derbyCon DerbyConRedGreen) db1) -->
      for dur . pure (setParam (derbyCon DerbyConGreenBlue) db1) -->
      for dur . pure (setParam (derbyCon DerbyConRedGreenBlue) db1) -->
-     gbDerbys'
+     gbDerbys' db1
 
-gbDerbyRot =
-  let db1 = (select gb_derby_1 (select gb_1 universe))
+-- gbDerbyRot :: MidiLights
+gbDerbyRot db1 =
+  let -- db1 = (select gb_derby_1 (select gb_1 universe))
       dur = whole + 1
   in for dur . pure (setParam (derbyRotation (DerbyClockwise 100)) db1) -->
      for dur . pure (setParam (derbyRotation (DerbyCounterClockwise 100)) db1) -->
-     gbDerbyRot
+     gbDerbyRot db1
 
-gbDerbys =
-  let db1 = (select gb_derby_1 (select gb_1 universe))
+gbDerbyRot' db1 =
+  let -- db1 = (select gb_derby_1 (select gb_1 universe))
+      dur = whole + 1
+  in for dur . pure (setParam (derbyRotation (DerbyCounterClockwise 100)) db1) -->
+     for dur . pure (setParam (derbyRotation (DerbyClockwise 100)) db1) -->
+     gbDerbyRot' db1
+
+
+gbDerbyStrobe db =
+  pure (setParam (derbyStrobe (DerbyStrobeRate 228)) db)
+
+-- gbDerbys :: MidiLights
+gbDerby db1 =
+  let a = 1
+      -- db1 = (select gb_derby_1 (select gb_1 universe))
   in proc e ->
-       do colors <- gbDerbys' -< e
-          rot <- gbDerbyRot -< e
+       do colors <- gbDerbys' db1 -< e
+          -- colors <- pure (setParam (derbyCon DerbyConRed) db1) -< e
+          rot <- gbDerbyRot db1 -< e
+--          strobe <- gbDerbyStrobe db1 -< e
           returnA -< mergeParamsL [colors, rot]
+
+gbDerby' db1 =
+  let a = 1
+      -- db1 = (select gb_derby_1 (select gb_1 universe))
+  in proc e ->
+       do colors <- gbDerbys' db1 -< e
+          rot <- gbDerbyRot' db1 -< e
+  --        strobe <- gbDerbyStrobe db1 -< e
+          returnA -< mergeParamsL [colors, rot]
+
+gbDerbys :: MidiLights
+gbDerbys =
+  proc e ->
+    do db1 <- gbDerby (select gb_derby_1 (select gb_1 universe)) -< e
+       db2 <- gbDerby' (select gb_derby_2 (select gb_1 universe)) -< e
+       returnA -< mergeParamsL [db1, db2]
+
+-- gbDerbysOff :: MidiLights
+gbDerbyOff db1 =
+    let a = 1
+        -- db1 = (select gb_derby_1 (select gb_1 universe))
+    in pure (concat [ setParam (derbyCon DerbyConBlackout) db1
+                    , setParam (derbyRotation DerbyStop) db1
+                    ])
+
+gbDerbysOff = (gbDerbyOff (select gb_derby_1 (select gb_1 universe)) &&&
+              gbDerbyOff (select gb_derby_1 (select gb_1 universe))) >>> arr (uncurry mergeParams)
 {-
   proc e ->
     do d1 <- pure $ setParam  (derbyCon $ DerbyConRed)  -< e
@@ -757,7 +816,7 @@ main =
 --     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
        bracket_ (start midiIn) (MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession gbDerbys -- allRedBlue -- midiModes
+         do runShow queue (serialOutput s) beatSession gbDerbysOff -- allRedBlue -- midiModes
 --        do runShow queue printOutput beatSession redBlue -- nowNow
 --           pure ()
 

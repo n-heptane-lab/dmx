@@ -50,7 +50,7 @@ import System.MIDI.Utility as MIDI
 
 withSerial :: FilePath -> CommSpeed -> (SerialPort -> IO a) -> IO a
 withSerial device speed f =
-  bracket (openSerial device defaultSerialSettings { commSpeed = speed }) (const $ pure ()) {- closeSerial -} f
+  bracket (openSerial device defaultSerialSettings { commSpeed = speed }) (\p -> putStrLn "Closing serial port." >> closeSerial p >> putStrLn "closed.") f
 
 -- | COBS
 -- FIXME: handle longer than 254
@@ -613,6 +613,23 @@ instance (SetParam param u, SetParam param us) => SetParam param (u :+: us) wher
   setParam p  (u :+: us) =
     setParam p u ++ setParam p us
 
+-- * ParamVal
+
+class ToParam p where
+  type ToParameter p :: Parameter
+  toParam :: p -> Param (ToParameter p)
+
+instance ToParam GBParConVal where
+  type ToParameter GBParConVal = GBParCon
+  toParam = parCon
+
+instance ToParam GBLaserColorVal where
+  type ToParameter GBLaserColorVal = GBLaserColor
+  toParam = gbLaserColor
+
+sp :: (ToParam p, SetParam (ToParameter p) u) => p -> u -> [(Address, Value)]
+sp p u = setParam (toParam p) u
+
 -- * sequences
 
 blackout :: MidiLights
@@ -902,13 +919,13 @@ gbDerbysOff = (gbDerbyOff (select gb_derby_1 (select gb_1 universe)) &&&
 -- gbLaserColors :: MidiLights
 gbLaserColors lzr =
     let dur = whole + 1
-  in for dur . pure (setParam (gbLaserColor GBLaserRed) lzr) -->
-     for dur . pure (setParam (gbLaserColor GBLaserGreen) lzr) -->
-     for dur . pure (setParam (gbLaserColor GBLaserRedGreen) lzr) -->
-     for dur . pure (setParam (gbLaserColor GBLaserRedGreenStrobe) lzr) -->
-     for dur . pure (setParam (gbLaserColor GBLaserRedStrobeGreen) lzr) -->
-     for dur . pure (setParam (gbLaserColor GBLaserRedGreenAlternate) lzr) -->
-     for dur . pure (setParam (gbLaserColor GBLaserBlackout) lzr) -->
+  in for dur . pure (sp GBLaserRed lzr) -->
+     for dur . pure (sp GBLaserGreen lzr) -->
+     for dur . pure (sp GBLaserRedGreen lzr) -->
+     for dur . pure (sp GBLaserRedGreenStrobe lzr) -->
+     for dur . pure (sp GBLaserRedStrobeGreen lzr) -->
+     for dur . pure (sp GBLaserRedGreenAlternate lzr) -->
+     for dur . pure (sp GBLaserBlackout lzr) -->
      gbLaserColors lzr
 
 laserStrobe lzr =
@@ -973,7 +990,16 @@ gbBlackout gb =
 
 main :: IO ()
 main =
-  do -- sources <- enumerateSources
+  do queue <- atomically newTQueue
+     bracket (createDestination "DMX" (Just $ callback queue)) (\c -> putStrLn "disposing of connection." >> disposeConnection c) $ \midiIn ->
+       bracket_ (start midiIn) (putStrLn "closing midi" >> MIDI.close midiIn) $
+        withSerial dmxPort dmxBaud $ \s ->
+         do runShow queue (serialOutput s) beatSession (gbBlackout (select gb_1 universe)) -- allRedBlue -- midiModes
+
+--     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
+--        do runShow queue printOutput beatSession redBlue -- nowNow
+--           pure ()
+ -- sources <- enumerateSources
      -- print =<< (mapM getName sources)
 --     destinations <- enumerateDestinations
 --     print =<< (mapM getName destinations)
@@ -981,15 +1007,6 @@ main =
 --     let num = read numStr
 --         userPortOut = sources!!num
 --         userPortIn  = destinations!!num
-     queue <- atomically newTQueue
-     bracket (createDestination "DMX" (Just $ callback queue)) disposeConnection $ \midiIn ->
---     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
-       bracket_ (start midiIn) (MIDI.close midiIn) $
-        withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession (gbBlackout (select gb_1 universe)) -- allRedBlue -- midiModes
---        do runShow queue printOutput beatSession redBlue -- nowNow
---           pure ()
-
 {-
 instance SetParam a (a ': as) where
   setParam (Param v) (Fixture address) frame = frame

@@ -185,7 +185,7 @@ derbyStrobe v =
 data GBDerbyRotationVal
   = DerbyStop
   | DerbyClockwise Word8 -- ^ 0 to 122
-  | DerbyCounterClockwise Word8 -- ^ 0 to 122
+  | DerbyCounterClockwise Word8 -- ^ 0 to 121
     deriving Show
 
 derbyRotation :: GBDerbyRotationVal -> Param GBDerbyRotation
@@ -193,7 +193,54 @@ derbyRotation v =
   case v of
     DerbyStop      -> Param 0
     DerbyClockwise n -> Param $ 5 + min n 122
-    DerbyCounterClockwise n -> Param $ 134 + min n 122
+    DerbyCounterClockwise n -> Param $ 134 + min n 121
+
+data GBLaserColorVal
+  = GBLaserBlackout
+  | GBLaserRed
+  | GBLaserGreen
+  | GBLaserRedGreen
+  | GBLaserRedGreenStrobe
+  | GBLaserRedStrobeGreen
+  | GBLaserRedGreenAlternate
+    deriving (Eq, Ord, Read, Show)
+
+gbLaserColor :: GBLaserColorVal -> Param GBLaserColor
+gbLaserColor v =
+  case v of
+    GBLaserBlackout -> Param  0
+    GBLaserRed      -> Param 40
+    GBLaserGreen    -> Param 80
+    GBLaserRedGreen    -> Param 120
+    GBLaserRedGreenStrobe -> Param 160
+    GBLaserRedStrobeGreen -> Param 200
+    GBLaserRedGreenAlternate -> Param 240
+
+data GBLaserStrobeVal
+  = GBLaserStrobeOff
+  | GBLaserStrobeRate Word8 -- ^ 0 to 229
+  | GBLaserStrobeSound
+    deriving (Eq, Ord, Read, Show)
+
+gbLaserStrobe :: GBLaserStrobeVal -> Param GBLaserStrobe
+gbLaserStrobe v =
+  case v of
+    GBLaserStrobeOff -> Param 0
+    GBLaserStrobeRate n -> Param $ 10 + min n 229
+    GBLaserStrobeSound -> Param 240
+
+data GBLaserPatternVal
+  = GBLaserStop
+  | GBLaserClockwise Word8 -- ^ 0 to 122
+  | GBLaserCounterClockwise Word8 -- ^ 0 to 121
+    deriving (Eq, Ord, Read, Show)
+
+gbLaserPattern :: GBLaserPatternVal -> Param GBLaserPattern
+gbLaserPattern v =
+  case v of
+    GBLaserStop      -> Param 0
+    (GBLaserClockwise n) -> Param $ 5 + min n 122
+    (GBLaserCounterClockwise n) -> Param $ 134 + min n 122
 
 data Labeled (name :: Symbol) a = Labeled a
 
@@ -653,6 +700,11 @@ type Def_GB_Laser = Labeled "gb_laser" (Fixture Laser)
 def_gb_laser :: Address -> Def_GB_Laser
 def_gb_laser = Labeled . Fixture
 
+type GB_Laser = Label "gb_laser"
+
+gb_laser :: Proxy GB_Laser
+gb_laser = Proxy
+
 type Def_GB_Strobe = Labeled "gb_strobe" (Fixture Strobe)
 
 def_gb_strobe :: Address -> Def_GB_Strobe
@@ -794,6 +846,7 @@ gbDerbyOff db1 =
                     , setParam (derbyRotation DerbyStop) db1
                     ])
 
+gbDerbysOff :: MidiLights
 gbDerbysOff = (gbDerbyOff (select gb_derby_1 (select gb_1 universe)) &&&
               gbDerbyOff (select gb_derby_1 (select gb_1 universe))) >>> arr (uncurry mergeParams)
 {-
@@ -801,6 +854,42 @@ gbDerbysOff = (gbDerbyOff (select gb_derby_1 (select gb_1 universe)) &&&
     do d1 <- pure $ setParam  (derbyCon $ DerbyConRed)  -< e
        returnA -< mergeParamsL [d1]
 -}
+
+
+-- gbLaserColors :: MidiLights
+gbLaserColors lzr =
+    let dur = whole + 1
+  in for dur . pure (setParam (gbLaserColor GBLaserRed) lzr) -->
+     for dur . pure (setParam (gbLaserColor GBLaserGreen) lzr) -->
+     for dur . pure (setParam (gbLaserColor GBLaserRedGreen) lzr) -->
+     for dur . pure (setParam (gbLaserColor GBLaserRedGreenStrobe) lzr) -->
+     for dur . pure (setParam (gbLaserColor GBLaserRedStrobeGreen) lzr) -->
+     for dur . pure (setParam (gbLaserColor GBLaserRedGreenAlternate) lzr) -->
+     for dur . pure (setParam (gbLaserColor GBLaserBlackout) lzr) -->
+     gbLaserColors lzr
+
+laserStrobe lzr =
+  pure $ setParam (gbLaserStrobe (GBLaserStrobeRate 100)) lzr
+
+laserPattern lzr =
+  let dur = whole + 1
+  in for dur . pure (setParam (gbLaserPattern (GBLaserCounterClockwise 100)) lzr) -->
+     for dur . pure (setParam (gbLaserPattern (GBLaserClockwise 100)) lzr) -->
+     laserPattern lzr
+
+
+-- gbLasers :: MidiLights
+gbLasers lzr = gbLaserColors lzr
+
+gbLasers1 =
+  let lzr = select gb_laser (select gb_1 universe)
+  in proc e ->
+       do c <- gbLasers lzr -< e
+          s <- laserStrobe lzr -< e
+          p <- laserPattern lzr -< e
+          returnA -< mergeParamsL [c,s,p]
+
+
 main :: IO ()
 main =
   do -- sources <- enumerateSources
@@ -816,7 +905,7 @@ main =
 --     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
        bracket_ (start midiIn) (MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession gbDerbysOff -- allRedBlue -- midiModes
+         do runShow queue (serialOutput s) beatSession (gbStrobes1) -- allRedBlue -- midiModes
 --        do runShow queue printOutput beatSession redBlue -- nowNow
 --           pure ()
 

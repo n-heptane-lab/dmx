@@ -238,9 +238,47 @@ data GBLaserPatternVal
 gbLaserPattern :: GBLaserPatternVal -> Param GBLaserPattern
 gbLaserPattern v =
   case v of
-    GBLaserStop      -> Param 0
-    (GBLaserClockwise n) -> Param $ 5 + min n 122
+    GBLaserStop                 -> Param $ 0
+    (GBLaserClockwise n)        -> Param $ 5 + min n 122
     (GBLaserCounterClockwise n) -> Param $ 134 + min n 122
+
+data GBStrobePatternVal
+  = GBStrobeBlackout
+  | GBStrobeAuto1
+  | GBStrobeAuto2
+  | GBStrobeAuto3
+  | GBStrobeAuto4
+  | GBStrobeAuto5
+  | GBStrobeAuto6
+  | GBStrobeAuto7
+  | GBStrobeAuto8
+  | GBStrobeAuto9
+  | GBStrobeSpeed'
+  | GBStrobeSound
+    deriving (Eq, Ord, Read, Show)
+
+gbStrobePattern :: GBStrobePatternVal
+                   -> Param GBStrobePattern
+gbStrobePattern v =
+  case v of
+    GBStrobeBlackout -> Param 0
+    GBStrobeAuto1    -> Param 10
+    GBStrobeAuto2    -> Param 30
+    GBStrobeAuto3    -> Param 50
+    GBStrobeAuto4    -> Param 70
+    GBStrobeAuto5    -> Param 90
+    GBStrobeAuto6    -> Param 110
+    GBStrobeAuto7    -> Param 130
+    GBStrobeAuto8    -> Param 150
+    GBStrobeAuto9    -> Param 170
+    GBStrobeSpeed'    -> Param 190
+    GBStrobeSound    -> Param 210
+
+gbStrobeSpeed :: Word8 -> Param GBStrobeSpeed
+gbStrobeSpeed v = Param v
+
+gbStrobeDimmer :: Word8 -> Param GBStrobeDimmer
+gbStrobeDimmer v = Param v
 
 data Labeled (name :: Symbol) a = Labeled a
 
@@ -710,6 +748,11 @@ type Def_GB_Strobe = Labeled "gb_strobe" (Fixture Strobe)
 def_gb_strobe :: Address -> Def_GB_Strobe
 def_gb_strobe = Labeled . Fixture
 
+type GB_Strobe = Label "gb_strobe"
+
+gb_strobe :: Proxy GB_Strobe
+gb_strobe = Proxy
+
 type GigBar = (Def_GB_Par_1 :+: Def_GB_Par_2 :+: Def_GB_Derby_1 :+: Def_GB_Derby_2 :+: Def_GB_Laser :+: Def_GB_Strobe)
 
 type Def_GigBar_1 = Labeled "gigbar_1" GigBar
@@ -877,10 +920,15 @@ laserPattern lzr =
      for dur . pure (setParam (gbLaserPattern (GBLaserClockwise 100)) lzr) -->
      laserPattern lzr
 
+laserOff lzr =
+  pure $ concat [ setParam (gbLaserPattern GBLaserStop) lzr
+                , setParam (gbLaserColor GBLaserBlackout) lzr
+                ]
 
 -- gbLasers :: MidiLights
 gbLasers lzr = gbLaserColors lzr
 
+gbLasers1 :: MidiLights
 gbLasers1 =
   let lzr = select gb_laser (select gb_1 universe)
   in proc e ->
@@ -889,6 +937,39 @@ gbLasers1 =
           p <- laserPattern lzr -< e
           returnA -< mergeParamsL [c,s,p]
 
+strobePattern lzr =
+  pure $ setParam (gbStrobePattern GBStrobeAuto9) lzr
+
+strobeDimmer lzr =
+  pure $ setParam (gbStrobeDimmer 255) lzr
+
+strobeSpeed lzr =
+  pure $ setParam (gbStrobeSpeed 200) lzr
+
+gbStrobes1 :: MidiLights
+gbStrobes1 =
+    let strb = select gb_strobe (select gb_1 universe)
+    in proc e ->
+         do p <- strobePattern strb -< e
+            d <- strobeDimmer strb -< e
+            s <- strobeSpeed strb -< e
+            returnA -< mergeParamsL [p,d,s]
+
+gbBlackout gb =
+  let par1   = select gb_par_1 gb
+      par2   = select gb_par_2 gb
+      derby1 = select gb_derby_1 gb
+      derby2 = select gb_derby_2 gb
+      laser  = select gb_laser gb
+      strobe = select gb_strobe gb
+  in proc e ->
+      do p1 <- pure $ setParam (parCon $ ParConRGB 0) par1 -< e
+         p2 <- pure $ setParam (parCon $ ParConRGB 0) par2 -< e
+         d1 <- gbDerbyOff derby1 -< e
+         d2 <- gbDerbyOff derby2 -< e
+         l  <- laserOff laser -< e
+         s  <- pure $ setParam (gbStrobePattern GBStrobeBlackout) strobe -< e
+         returnA -< mergeParamsL [p1,p2, d1, d2]
 
 main :: IO ()
 main =
@@ -905,7 +986,7 @@ main =
 --     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
        bracket_ (start midiIn) (MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession (gbStrobes1) -- allRedBlue -- midiModes
+         do runShow queue (serialOutput s) beatSession (gbBlackout (select gb_1 universe)) -- allRedBlue -- midiModes
 --        do runShow queue printOutput beatSession redBlue -- nowNow
 --           pure ()
 

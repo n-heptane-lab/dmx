@@ -90,6 +90,19 @@ data Parameter
   | White
   | UV
   | Master
+  | SP64ColorMacros
+  | SP64SpeedStrobe
+  | S64Mode
+  | GBParCon
+  | GBDerbyCon
+  | GBDerbyStrobe
+  | GBDerbyRotation
+  | GBLaserColor
+  | GBLaserStrobe
+  | GBLaserPattern
+  | GBStrobePattern
+  | GBStrobeDimmer
+  | GBStrobeSpeed
   deriving (Eq, Ord, Read, Show)
 
 
@@ -114,6 +127,61 @@ white = Param
 
 uv :: Value -> Param UV
 uv = Param
+
+master :: Value -> Param Master
+master v = Param v
+
+data GBParConVal
+  = ParConRGB Word8 -- ^ 0 to 127
+  | ParConStrobeSpeed Word8 -- ^ 0 to 111
+  | ParConStrobeSound Word -- ^ 0 to 9
+  | ParConRGB100 Word8 -- ^ 0 to 5
+    deriving Show
+
+parCon :: GBParConVal -> Param GBParCon
+parCon cv =
+  case cv of
+    (ParConRGB v) -> Param (min v 127)
+
+data GBDerbyConVal
+  = DerbyConBlackout
+  | DerbyConRed
+  | DerbyConGreen
+  | DerbyConBlue
+  | DerbyConRedGreen
+  | DerbyConRedBlue
+  | DerbyConGreenBlue
+  | DerbyConRedGreenBlue
+  | DerbyConAuto1
+  | DerbyConAuto2
+    deriving Show
+
+derbyCon :: GBDerbyConVal -> Param GBDerbyCon
+derbyCon v =
+  case v of
+    (DerbyConBlackout)     -> Param $ 0
+    (DerbyConRed)          -> Param $ 25
+    (DerbyConGreen)        -> Param $ 50
+    (DerbyConBlue)         -> Param $ 75
+    (DerbyConRedGreen)     -> Param $ 100
+    (DerbyConRedBlue)      -> Param $ 125
+    (DerbyConGreenBlue)    -> Param $ 125
+    (DerbyConRedGreenBlue) -> Param $ 175
+    (DerbyConAuto1)        -> Param $ 200
+    (DerbyConAuto2)        -> Param $ 225
+
+data GBDerbyRotationVal
+  = DerbyStop
+  | DerbyClockwise Word8 -- ^ 0 to 122
+  | DerbyCounterClockwise Word8 -- ^ 0 to 122
+    deriving Show
+
+derbyRotation :: GBDerbyRotationVal -> Param GBDerbyRotation
+derbyRotation v =
+  case v of
+    DerbyStop      -> Param 0
+    DerbyClockwise n -> Param $ 5 + min n 122
+    DerbyCounterClockwise n -> Param $ 134 + min n 122
 
 data Labeled (name :: Symbol) a = Labeled a
 
@@ -187,34 +255,6 @@ type MidiSession m = Session m MidiTimed
 type MidiWire    = Wire MidiTimed () Identity
 type MidiLights  = Wire MidiTimed () Identity (Event Input) Output
 
-redBlue :: MidiLights
-redBlue =
-  let dur = quarter + 1 in
-  for dur . pure (setParam (red 255) (select hex12p1 universe)) -->
-  for dur . pure (setParam (blue 255) (select hex12p1 universe)) -->
-  redBlue
-
-
-pulsar :: MidiLights
-pulsar =
-  (for 255 .
-     proc midi ->
-       do t <- time -< ()
-          returnA -< (setParam (green (fromIntegral t)) (select hex12p1 universe))) -->
-  (for 255 .
-     proc midi ->
-       do t <- time -< ()
-          returnA -< (setParam (green (fromIntegral (255 - t))) (select hex12p1 universe))) -->
-  pulsar
-
-strobe :: MidiLights
-strobe  =
-  let onTime = 1 in
-  proc _ ->
-    do t <- fmap (`mod` eighth) time -< ()
-       returnA -< if t == 0
-                  then setParam (white 255) (select hex12p1 universe)
-                  else []
 
 type Midi2Seq = Map Int MidiLights
 
@@ -235,38 +275,6 @@ updateMap m2s =
                            0 -> Map.insert 0 redBlue m2s
                            1 -> Map.insert 1 strobe m2s
        returnA -< (e, Event m2s')
-
-{-
-doLights :: MidiWire (Event Input, Event Midi2Seq) Output
-doLights = modes Map.empty $ \m2s -> foldLights (Map.elems m2s)
--}
-{-
-midiModes ::
-    (Monad m, Ord k)
-    => k  -- ^ Initial mode.
-    -> (k -> Wire s e m a b)  -- ^ Select wire for given mode.
-    -> Wire s e m (a, Event k) b
-midiModes m0 select = loop M.empty m0 (select m0)
-    where
-    loop ms' m' w'' =
-        WGen $ \ds mxev' ->
-            case mxev' of
-              Left _ -> do
-                  (mx, w) <- stepWire w'' ds (fmap fst mxev')
-                  return (mx, loop ms' m' w)
-              Right (x', ev) -> do
-                  let (ms, m, w') = switch ms' m' w'' ev
-                  (mx, w) <- stepWire w' ds (Right x')
-                  return (mx, loop ms m w)
-
-    switch ms' m' w' NoEvent = (ms', m', w')
-    switch ms' m' w' (Event m) =
-        let ms = M.insert m' w' ms' in
-        case M.lookup m ms of
-          Nothing -> (ms, m, select m)
-          Just w  -> (M.delete m ms, m, w)
--}
-
 
 midiModes :: MidiLights
 midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
@@ -305,8 +313,8 @@ midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
                     case mm of
                       (NoteOn key vel) ->
                         case key of
-                          0 -> (Map.insert 0 redBlue ms')
-                          1 -> (Map.insert 1 strobe ms')
+                          60 -> (Map.insert key redBlue ms')
+                          61 -> (Map.insert key strobe ms')
                           _ -> ms'
                       (NoteOff key vel) -> Map.delete key ms'
                       _ -> ms'
@@ -314,104 +322,6 @@ midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
               _ -> ms'
       in ms
 
-{-
-              Right ev -> do
-                  let (ms, w') = switch ms' w'' ev
-                  (mx, w) <- stepWire w' ds mxev' -- (Right ev)
-                  return (mx, loop ms w)
-
-    switch ms' w' NoEvent = (ms', w')
-    switch ms' w' (Event input) =
-      case input of
-            (ME (MidiEvent _time midiMessage)) ->
-              case midiMessage of
-                (MidiMessage _channel mm) ->
-                  case mm of
-                    (NoteOn key vel) ->
-                      case key of
---                       0 -> (Map.insert 0 redBlue ms')
---                        1 -> (Map.insert 1 strobe ms')
-                        _ -> (ms', w')
-                    _ -> (ms', w')
-                _ -> (ms', w')
---      in (ms, foldLights (Map.elems ms))
--}
-
-{-
-This solution does not work because any time an Event is triggered it restarts the wires.
-
-midiModes :: MidiLights
-midiModes = loop (Map.fromList [(0,redBlue)]) redBlue
-    where
-    loop ms' w'' =
-        WGen $ \ds mxev' ->
-            case mxev' of
-              Left _ -> do
-                  (mx, w) <- stepWire w'' ds mxev'
-                  return (mx, loop ms' w)
-
-              Right ev -> do
-                  let (ms, w') = switch ms' w'' ev
-                  (mx, w) <- stepWire w' ds mxev' -- (Right ev)
-                  return (mx, loop ms w)
-
-    switch ms' w' NoEvent = (ms', w')
-    switch ms' w' (Event input) =
-      case input of
-            (ME (MidiEvent _time midiMessage)) ->
-              case midiMessage of
-                (MidiMessage _channel mm) ->
-                  case mm of
-                    (NoteOn key vel) ->
-                      case key of
---                       0 -> (Map.insert 0 redBlue ms')
---                        1 -> (Map.insert 1 strobe ms')
-                        _ -> (ms', w')
-                    _ -> (ms', w')
-                _ -> (ms', w')
---      in (ms, foldLights (Map.elems ms))
-{-    
-    switch ms' m' w' (Event m) =
-        let ms = M.insert m' w' ms' in
-        case M.lookup m ms of
-          Nothing -> (ms, m, select m)
-          Just w  -> (M.delete m ms, m, w)
--}
--}
-
-
-
--- updateMap' :: Midi2Seq -> MidiWire (Event Input) (Midi2Seq, Event Input)
-{-
-updateMap' m2s =
-  proc e ->
-  do o <- (let mmm =
-                  (case e of
-                    (Event (ME (MidiEvent _time midiMessage))) ->
-                      case midiMessage of
-                        (MidiMessage _channel mm) ->
-                          case mm of
-                            (NoteOn key vel) ->
-                              case key of
-                               0 -> Map.insert 0 redBlue m2s
-                               1 -> Map.insert 1 strobe m2s)
-             in mmm) -< ()
-
-       returnA -< o
--}
-{-
-    let m2s' = case e of
-               (Event (ME (MidiEvent _time midiMessage))) ->
-                 case midiMessage of
-                   (MidiMessage _channel mm) ->
-                     case mm of
-                       (NoteOn key vel) ->
-                         case key of
-                           0 -> Map.insert 0 redBlue m2s
-                           1 -> Map.insert 1 strobe m2s
-    in foldLights (Maps.elem m2s')
---       returnA -< (m2s', e)
--}
 midi2seq :: MidiWire (Midi2Seq, Event Input) Output
 midi2seq =
   proc (m2s, e) ->
@@ -420,139 +330,6 @@ midi2seq =
 --   do o <- (app $ arr (\(m2s, e) -> (foldLights (Map.elems m2s), e))) -< (m2s, e)
 --   do o <- (arr (\_ -> undefined) >>> app) -< (m2s, e)
 
-{-
-midi2seq :: Midi2Seq -> MidiLights
-midi2seq m2s =
-       o <- foldLights (Map.elems m2s') -< e
-       returnA -< o
--}
-       
-
-{-
-midi2seq = loop $
-  proc (e, m2s) ->
-    do let m2s' =
-             case e of
-               (Event (ME (MidiEvent _time midiMessage))) ->
-                 case midiMessage of
-                   (MidiMessage _channel mm) ->
-                     case mm of
-                       (NoteOn key vel) ->
-                         case key of
-                           0 -> Map.insert 0 redBlue m2s
-                           1 -> Map.insert 1 strobe m2s
-       s <- ( \(e, m2s) -> foldLights (Map.elems m2s')) -< (e, m2s')
-       returnA -< (s, m2s')
--}
-{-  
-  let onTime = 1 in
-    proc _ ->
-     do t <- fmap (`mod` quarter) time -< ()
-        returnA -< for 1 . setParam (white 255) (select hex12p1 universe)
-{-
-        asum [ when (== 0)          >>> setParam (white 255) (select hex12p1 universe)
---             , when (== 0 + onTime) >>> []
-             ] -< t
-  -}
--}
-{-
-nowNow :: MidiLights
-nowNow =
-  periodic 1 . (pure [Print "now"])
-
-fadeOut :: MidiLights
-fadeOut =
-        proc midi ->
-          do t <- time -< ()
-             v <- integral 0 -< 1 -- (fromIntegral t)
-             q <- (periodic 1 . arr (\v -> pure (F $ setParam (red (floor v)) (select hex12p1 universe)))) &&& (became (> 25)) -< v
-             until -< q
-
-fades = fadeOut --> fades
-
-strobe :: MidiWire Int [OutputEvent] -> MidiWire Int [OutputEvent] -> MidiLights
-strobe on off =
-  let onTime = 10 in
-  periodic 1 .
-    proc _ ->
-     do t <- fmap (`mod` quarter) time -< ()
-        asum [ when (== 0)          >>> on
-             , when (== 0 + onTime) >>> off
-             ] -< t
-onWhite, offWhite :: MidiWire Int [OutputEvent]
-onWhite = pure [(F $ setParam (white 255) (select hex12p1 universe))]
-offWhite = pure [(F $ setParam (white 0) (select hex12p1 universe))]
-
-redBlue :: MidiLights
---redBlue = for quarter . now . (pure (MVector.replicate 30 0) >>= \v -> pure [F v]) -->
-redBlue =
-  let dur = quarter + 1 in
-   for dur . now . (pure [F $ setParam (red 255) (select hex12p1 universe)]) -->
-   for (eighth + 1) . now . (pure [F $ setParam (green 255) (select hex12p1 universe)]) -->
-   for (eighth + 1) . now . (pure [F $ setParam (blue 255) (select hex12p1 universe)]) -->
-   for dur . now . (pure [F $ setParam (white 255) (select hex12p1 universe)]) -->
-   for (eighth + 1) . now . (pure [F $ setParam (amber 255) (select hex12p1 universe)]) -->
-   for (eighth + 1) . now . (pure [F $ setParam (uv 255) (select hex12p1 universe)]) -->
-   redBlue
-
-midiMap :: MidiLights -- MidiWire (Event Action) (Event [OutputEvent])
-midiMap =
-  proc e ->
-    case e of
-      Event me@(ME (MidiEvent _time midiMessage)) ->
-        case midiMessage of
-          (MidiMessage _channel mm) ->
-            case mm of
-              (NoteOn key vel) ->
-                redBlue -< e
-              _ -> returnA -< NoEvent
-          _ -> returnA -< NoEvent
-      _ -> returnA -< NoEvent
-
-midiMode :: MidiWire (Event Action) (Event Action, Event Int)
-midiMode =
-  proc e ->
-    case e of
-      Event me@(ME (MidiEvent _time midiMessage)) ->
-        case midiMessage of
-          (MidiMessage _channel mm) ->
-            case mm of
-              (NoteOn key vel) ->
-                returnA -< (e, Event key)
-              _ -> returnA -< (e, NoEvent)
-          _ -> returnA -< (e, NoEvent)
-
-midiMap2 :: MidiLights
-midiMap2 = midiMode >>> (modes 0 pickMode)
-  where
-    pickMode k =
-      case k of
-        0 -> redBlue
-        1 -> strobe onWhite offWhite
-
-multi :: MidiLights
-multi =
-  proc e ->
-   do rb <- redBlue -< e
-      s <- strobe onWhite offWhite -< e
-      returnA -< mergeOutput s rb
-   
---    case e of
-{-      
-      Tick -> returnA -< NoEvent
-
-        case midiMessage of
-          (MidiMessage _channel (NoteOn key vel)) ->
-            case key of
-              0 -> returnA -< undefined
--}
--}
-
-{-  
-  for quarter . now . MVector.replicate 30 0 -->
-  for quarter . now . MVector.replicate 30 1 -->
-  redBlue
--}
 multi :: MidiLights
 multi =
    proc e ->
@@ -560,26 +337,12 @@ multi =
        p  <- strobe  -< e
        returnA -< mergeParams rb p
 
-main :: IO ()
-main =
-  do -- sources <- enumerateSources
-     -- print =<< (mapM getName sources)
---     destinations <- enumerateDestinations
---     print =<< (mapM getName destinations)
---     [numStr] <- getArgs
---     let num = read numStr
---         userPortOut = sources!!num
---         userPortIn  = destinations!!num
-     queue <- atomically newTQueue
-     bracket (createDestination "DMX" (Just $ callback queue)) disposeConnection $ \midiIn ->
---     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
-       bracket_ (start midiIn) (MIDI.close midiIn) $
-        withSerial dmxPort dmxBaud $ \s ->
-         do frame <- MVector.replicate 6 0
-            runShow queue (serialOutput frame s) beatSession midiModes
---        do runShow queue printOutput beatSession redBlue -- nowNow
---           pure ()
-
+allRedBlue =
+  proc e ->
+     do rb <- redBlueU (select slimPar64_1 universe :+: select ultrabar_1 universe ) -< e
+        m  <- pure $ setParam (master 255) (select slimPar64_1 universe :+: select hex12p1 universe) -< e
+        s <- strobe -< e
+        returnA -< mergeParams s (mergeParams rb m)
 
 mergeOutput :: Event [OutputEvent] -> Event [OutputEvent] -> Event [OutputEvent]
 mergeOutput NoEvent e = e
@@ -595,6 +358,11 @@ mergeOutput' events1 events2 =
 mergeParams :: [(Address, Word8)] -> [(Address, Word8)] -> [(Address, Word8)]
 mergeParams params1 params2 =
   map maximum $ groupBy ((==) `on` fst) $ sort $ params1 ++ params2
+
+mergeParamsL :: [[(Address, Word8)]] -> [(Address, Word8)]
+mergeParamsL params =
+    map maximum $ groupBy ((==) `on` fst) $ sort $ concat params
+
 
 sixteenth, eighth, quarter, whole :: Int
 sixteenth  = 6
@@ -620,17 +388,18 @@ printOutput :: (MonadIO m) => OutputEvent -> m ()
 printOutput (Print str) = liftIO $ putStrLn str
 printOutput (F frame) = liftIO $ print frame
 
-serialOutput :: (MonadIO m) => Frame -> SerialPort -> Output -> m ()
-serialOutput frame port params = liftIO $
+serialOutput :: (MonadIO m) => SerialPort -> Output -> m ()
+serialOutput port params = liftIO $
 {-
   case outputEvent of
     (Print str) -> putStrLn str
     (F params)   ->
 -}
-      do -- print params
-         frame <- MVector.replicate 6 0
+      do print params
+         frame <- MVector.replicate (7+7+18+20) 0
          mapM_ (\(addr, val) -> write frame (fromIntegral (addr - 1)) val) params
          vals <- Vector.toList <$> Vector.freeze frame
+--         print vals
          -- print vals
          -- print (B.length (B.pack $ stuff vals))
          -- print (stuff vals)
@@ -670,14 +439,7 @@ callback :: TQueue Input -> MidiEvent -> IO ()
 callback queue midiEvent =
   do -- print midiEvent
      atomically $ writeTQueue queue (ME midiEvent)
-{-
-  do v <- MVector.new 10
-     MVector.set v 0
---     setParam (Param 12 :: Param 'Green) ultrabar1 v
---     s <- openSerial dmxPort defaultSerialSettings { commSpeed = dmxBaud }
-     v' <- Vector.freeze v
-     print (Vector.toList v')
--}
+
 data Path
   = Here
   | Label Symbol
@@ -741,7 +503,7 @@ instance (KnownNat (ParamNat (Proxy param) (Proxy params))) => SetParam param (F
   setParam (Param val) (Fixture address) =
         let n = natVal (Proxy :: Proxy (ParamNat (Proxy param) (Proxy params)))
         in [(address + fromIntegral n, val)]
-{-    
+{-
     in write frame ((fromIntegral address) + (fromIntegral n)) val
 -}
 instance (SetParam param u) => SetParam param (Labeled lbl u) where
@@ -754,94 +516,63 @@ instance (SetParam param u, SetParam param us) => SetParam param (u :+: us) wher
   setParam p  (u :+: us) =
     setParam p u ++ setParam p us
 
-{-
-setParam :: ( Select path universe
-            ) => Param param -> Proxy path -> universe -> IO ()
-setParam (Param val) _ universe = pure ()
--}
--- instance (Select (Label lbl) universes) => Select (Label lbl) (universe :+: universes) where
---  select lbl (u :+: us) =  select (Proxy :: Proxy (Label lbl)) us
+-- * sequences
 
-  -- undefined -- select lbl us -- undefined -- 1 :: Int -- select lbl us
-    -- undefined :: Int -- SubUniverse (Label lbl) (universe :+: universes)
-    -- select undefined us -- (select lbl us) :: SubUniverse ('Label lbl) (universes)
+blackout :: MidiLights
+blackout = arr (const [])
 
-{-
-class Select (path :: Path) (universe :: *) where
-  type SubUniverse path universe
-  select :: Proxy path -> universe -> (SubUniverse path universe)
+redBlue :: MidiLights
+redBlue =
+  let dur = quarter + 1 in
+  for dur . pure (setParam (red 255) (select hex12p1 universe)) -->
+  for dur . pure (setParam (blue 255) (select hex12p1 universe)) -->
+  redBlue
 
-instance Select Here universe where
-  type SubUniverse Here universe = universe
-  select _ u = u
+redBlueU :: (SetParam 'Red universe, SetParam 'Blue universe) => universe -> MidiLights
+redBlueU u =
+  let dur = quarter + 1 in
+  for dur . pure (setParam (red 255) u) -->
+  for dur . pure (setParam (blue 255) u) -->
+  redBlueU u
 
-instance Select (Label lbl) (Labeled lbl universe) where
-  type SubUniverse (Label lbl) (Labeled lbl universe) = universe
-  select _ (Labeled u) = u
 
-instance Select (Label lbl) (Labeled lbl universe :+: universes) where
-  type SubUniverse (Label lbl) (Labeled lbl universe :+: universes) = universe
-  select _ (Labeled u :+: universes) = u
+pulsar :: MidiLights
+pulsar =
+  (for 255 .
+     proc midi ->
+       do t <- time -< ()
+          returnA -< (setParam (green (fromIntegral t)) (select hex12p1 universe))) -->
+  (for 255 .
+     proc midi ->
+       do t <- time -< ()
+          returnA -< (setParam (green (fromIntegral (255 - t))) (select hex12p1 universe))) -->
+  pulsar
 
-instance (Select (Label lbl) universes) => Select (Label lbl) (Labeled lbl' universe :+: universes) where
-  type SubUniverse (Label lbl) (Labeled lbl' universe :+: universes) = SubUniverse (Label lbl) universes
-  select lbl (u :+: us) = select lbl us
+strobe :: MidiLights
+strobe  =
+  let onTime = 1 in
+  proc _ ->
+    do t <- fmap (`mod` eighth) time -< ()
+       returnA -< if t == 0
+                  then setParam (white 255) (select hex12p1 universe)
+                  else []
 
-instance (KnownNat n, CmpNat m n ~ GT) => Select (At n) (Indexed m universe) where
-  type SubUniverse (At n) (Indexed m universe) = universe
-  select at (Indexed us) = us !! (fromIntegral $ natVal (Proxy :: Proxy n))
+-- * SlimPar64
 
-instance (KnownNat n, CmpNat m n ~ GT) => Select (At n) (Labeled lbl (Indexed m universe)) where
-  type SubUniverse (At n) (Labeled lbl (Indexed m universe)) = universe
-  select at (Labeled (Indexed us)) = us !! (fromIntegral $ natVal (Proxy :: Proxy n))
--}
-{-
-instance Select (AT 0) (universe :+: universes) where
-  type SubUniverse (AT 0) (universe :+: universes) = universe
-  select _ (u :+: us) = u
--}
-{- This works until we try to have a list of paths. We need a way to select sub universes.
-class SetParam param path universe where
-  setParam :: Param param -> path -> universe -> Frame -> IO ()
+type SlimPar64_7channel = '[Red, Green, Blue, SP64ColorMacros, SP64SpeedStrobe, S64Mode, Master]
 
-{-
-MVector.replicate 30 0 >>= \frame -> (setParam (green 10) here hex12p1 frame) >> (setParam (red 10) here hex12p1 frame) >> (print =<< Vector.freeze frame)
--}
-instance ( Member param params ~ True
-         , KnownNat (ParamNat (Proxy param) (Proxy params))
-         ) =>
-         SetParam param (PATH Here) (Fixture params) where
-  setParam (Param val) _ (Fixture address) frame =
-    let n = natVal (Proxy :: Proxy (ParamNat (Proxy param) (Proxy params)))
-    in write frame ((fromIntegral address) + (fromIntegral n)) val
-{-
-MVector.replicate 30 0 >>= \frame -> (setParam (green 10) here hex12p1 frame) >> (setParam (red 10) here hex12p1 frame) >> (print =<< Vector.freeze frame)
--}
-instance (SetParam param (PATH Here) fixture) =>
-         SetParam param (PATH (Labeled lbl)) (Label lbl fixture) where
-  setParam p _ (Label fixture) frame = setParam p (PATH :: PATH Here) fixture frame
+slimPar64 :: Address -> Fixture SlimPar64_7channel
+slimPar64 = Fixture
 
-{-
-MVector.replicate 30 0 >>= \frame -> (setParam (green 10) (PATH :: PATH (At 0)) (ultrabar 9) frame) >> (print =<< Vector.freeze frame)
--}
-instance (SetParam param (PATH Here) fixtureA) =>
-         SetParam param (PATH (At 0)) (fixtureA :+: rest) where
-  setParam p _ (fixtureA :+: _) frame = setParam p (PATH :: PATH Here) fixtureA frame
+type Def_SlimPar64_1 = Labeled "slimPar64_1" (Fixture SlimPar64_7channel)
 
-instance (SetParam param (PATH Here) fixtureA) =>
-         SetParam param (PATH (At 0)) (fixtureA) where
-  setParam p _ (fixtureA) frame = setParam p (PATH :: PATH Here) fixtureA frame
+def_slimPar64_1 :: Def_SlimPar64_1
+def_slimPar64_1 = Labeled $ slimPar64 1
 
-{-
-MVector.replicate 30 0 >>= \frame -> (setParam (green 10) (PATH :: PATH (At 2)) (ultrabar 9) frame) >> (print =<< Vector.freeze frame)
--}
-instance (CmpNat n 0 ~ GT, SetParam param (PATH (At (n - 1))) fixtures) =>
-         SetParam param (PATH (At n)) (fixture :+: fixtures) where
-  setParam p _ (_ :+: fixtures) frame = setParam p (PATH :: PATH (At (n - 1))) fixtures frame
+type SlimPar64_1 = Label "slimPar64_1"
 
-instance (SetParam param (PATH (path :+: paths)) universe) where
-setParam p _ universe frame = setParam p (PATH ::
--}
+slimPar64_1 :: Proxy SlimPar64_1
+slimPar64_1 = Proxy
 
 -- * Hex12p
 
@@ -851,30 +582,92 @@ hex12p :: Address -> Fixture Hex12p_7channel
 hex12p addr = Fixture { address = addr }
 
 def_hex12p1 :: Labeled "hex12p1" (Fixture Hex12p_7channel)
-def_hex12p1 = Labeled $ hex12p 1
+def_hex12p1 = Labeled $ hex12p 8
 
 type Hex12p1 = Label "hex12p1"
 
 hex12p1 :: Proxy Hex12p1
 hex12p1 = Proxy
 
+-- * Gigbar
+
+type Par   = [Red, Green, Blue, GBParCon]
+type Derby = [GBDerbyCon, GBDerbyStrobe, GBDerbyRotation]
+type Laser = [GBLaserColor, GBLaserStrobe, GBLaserPattern]
+type Strobe = [GBStrobePattern, GBStrobeDimmer, GBStrobeSpeed]
+
+type Def_GB_Par_1 = Labeled "gb_par_1" (Fixture Par)
+
+def_gb_par_1 :: Address -> Def_GB_Par_1
+def_gb_par_1 = Labeled . Fixture
+
+type GB_Par_1 = Label "gb_par_1"
+
+gb_par_1 :: Proxy GB_Par_1
+gb_par_1 = Proxy
+
+type Def_GB_Par_2 = Labeled "gb_par_2" (Fixture Par)
+
+def_gb_par_2 :: Address -> Def_GB_Par_2
+def_gb_par_2 = Labeled . Fixture
+
+type GB_Par_2 = Label "gb_par_2"
+
+gb_par_2 :: Proxy GB_Par_2
+gb_par_2 = Proxy
+
+type Def_GB_Derby_1 = Labeled "gb_derby_1" (Fixture Derby)
+
+def_gb_derby_1 :: Address -> Def_GB_Derby_1
+def_gb_derby_1 = Labeled . Fixture
+
+type GB_Derby_1 = Label "gb_derby_1"
+
+gb_derby_1 :: Proxy GB_Derby_1
+gb_derby_1 = Proxy
+
+type Def_GB_Derby_2 = Labeled "gb_derby_2" (Fixture Derby)
+
+def_gb_derby_2 :: Address -> Def_GB_Derby_2
+def_gb_derby_2 = Labeled . Fixture
+
+
+type Def_GB_Laser = Labeled "gb_laser" (Fixture Laser)
+
+def_gb_laser :: Address -> Def_GB_Laser
+def_gb_laser = Labeled . Fixture
+
+type Def_GB_Strobe = Labeled "gb_strobe" (Fixture Strobe)
+
+def_gb_strobe :: Address -> Def_GB_Strobe
+def_gb_strobe = Labeled . Fixture
+
+type GigBar = (Def_GB_Par_1 :+: Def_GB_Par_2 :+: Def_GB_Derby_1 :+: Def_GB_Derby_2 :+: Def_GB_Laser :+: Def_GB_Strobe)
+
+type Def_GigBar_1 = Labeled "gigbar_1" GigBar
+
+def_gb :: Address -> GigBar
+def_gb addr =
+  def_gb_par_1 addr :+:
+  def_gb_par_2 (addr + 4) :+:
+  def_gb_derby_1 (addr + 8) :+:
+  def_gb_derby_2 (addr + 11) :+:
+  def_gb_laser (addr + 14) :+:
+  def_gb_strobe (addr + 17)
+
+def_gb_1 :: Def_GigBar_1
+def_gb_1 = Labeled $ def_gb (7+7+18+1)
+
+type GigBar_1 = Label "gigbar_1"
+
+gb_1 :: Proxy GigBar_1
+gb_1 = Proxy
+
 -- * Ultrabar
 
 type Ultrabar_RGB = [Red, Green, Blue]
 
 type Ultrabar_18 = Indexed 6 (Fixture Ultrabar_RGB)
-
--- :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB :+: Fixture Ultrabar_RGB
-{-
-ultrabar :: Address -> Ultrabar_18
-ultrabar addr =
-  Fixture { address = addr      } :+:
-  Fixture { address = addr +  3 } :+:
-  Fixture { address = addr +  6 } :+:
-  Fixture { address = addr +  9 } :+:
-  Fixture { address = addr + 12 } :+:
-  Fixture { address = addr + 15 }
--}
 
 ultrabar :: Address -> Ultrabar_18
 ultrabar addr =
@@ -887,15 +680,86 @@ ultrabar addr =
    , Fixture { address = addr + 15 }
    ]
 
-ultrabar1 :: Labeled "ultrabar1" Ultrabar_18
-ultrabar1 = Labeled $ ultrabar 9
+type Def_Ultrabar_1 = Labeled "ultrabar_1" Ultrabar_18
 
-type Ultrabar1 = Label "ultrabar1"
+def_ultrabar_1 :: Def_Ultrabar_1 -- Labeled "ultrabar_1" Ultrabar_18
+def_ultrabar_1 = Labeled $ ultrabar 15
 
-type Universe = Labeled "hex12p1" (Fixture Hex12p_7channel) :+:
-            Labeled "ultrabar1" Ultrabar_18
+type Ultrabar_1 = Label "ultrabar_1"
+
+ultrabar_1 :: Proxy Ultrabar_1
+ultrabar_1 = Proxy
+
+type Universe =
+  Labeled "hex12p1" (Fixture Hex12p_7channel) :+:
+  Def_SlimPar64_1 :+:
+  Def_Ultrabar_1 :+:
+  Def_GigBar_1
+
 universe :: Universe
-universe = def_hex12p1 :+: ultrabar1
+universe = def_hex12p1 :+: def_slimPar64_1 :+: def_ultrabar_1 :+: def_gb_1
+
+
+gbRedBlue =
+  let par1 = (select gb_par_1 (select gb_1 universe))
+      par2 = (select gb_par_2 (select gb_1 universe))
+  in proc e ->
+      do rb1 <- redBlueU par1  -< e
+         rb2 <- redBlueU par2  -< e
+         m1  <- pure $ setParam (parCon $ ParConRGB 127) par1 -< e
+         m2  <- pure $ setParam (parCon $ ParConRGB 127) par2 -< e
+         returnA -< mergeParamsL [m1, m2, rb1, rb2]
+
+gbDerbys' :: MidiLights
+gbDerbys' =
+  let db1 = (select gb_derby_1 (select gb_1 universe))
+      dur = quarter + 1
+  in -- for dur . arr (\_ -> setParam (derbyCon DerbyConRed) db1 ++ setParam (derbyRotation (DerbyClockwise 3)) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConRed) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConGreen) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConBlue) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConRedBlue) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConRedGreen) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConGreenBlue) db1) -->
+     for dur . pure (setParam (derbyCon DerbyConRedGreenBlue) db1) -->
+     gbDerbys'
+
+gbDerbyRot =
+  let db1 = (select gb_derby_1 (select gb_1 universe))
+      dur = whole + 1
+  in for dur . pure (setParam (derbyRotation (DerbyClockwise 100)) db1) -->
+     for dur . pure (setParam (derbyRotation (DerbyCounterClockwise 100)) db1) -->
+     gbDerbyRot
+
+gbDerbys =
+  let db1 = (select gb_derby_1 (select gb_1 universe))
+  in proc e ->
+       do colors <- gbDerbys' -< e
+          rot <- gbDerbyRot -< e
+          returnA -< mergeParamsL [colors, rot]
+{-
+  proc e ->
+    do d1 <- pure $ setParam  (derbyCon $ DerbyConRed)  -< e
+       returnA -< mergeParamsL [d1]
+-}
+main :: IO ()
+main =
+  do -- sources <- enumerateSources
+     -- print =<< (mapM getName sources)
+--     destinations <- enumerateDestinations
+--     print =<< (mapM getName destinations)
+--     [numStr] <- getArgs
+--     let num = read numStr
+--         userPortOut = sources!!num
+--         userPortIn  = destinations!!num
+     queue <- atomically newTQueue
+     bracket (createDestination "DMX" (Just $ callback queue)) disposeConnection $ \midiIn ->
+--     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
+       bracket_ (start midiIn) (MIDI.close midiIn) $
+        withSerial dmxPort dmxBaud $ \s ->
+         do runShow queue (serialOutput s) beatSession gbDerbys -- allRedBlue -- midiModes
+--        do runShow queue printOutput beatSession redBlue -- nowNow
+--           pure ()
 
 {-
 instance SetParam a (a ': as) where
@@ -1001,3 +865,363 @@ data Hex12p = Hex_7Channel
 
 
 
+
+{-
+doLights :: MidiWire (Event Input, Event Midi2Seq) Output
+doLights = modes Map.empty $ \m2s -> foldLights (Map.elems m2s)
+-}
+{-
+midiModes ::
+    (Monad m, Ord k)
+    => k  -- ^ Initial mode.
+    -> (k -> Wire s e m a b)  -- ^ Select wire for given mode.
+    -> Wire s e m (a, Event k) b
+midiModes m0 select = loop M.empty m0 (select m0)
+    where
+    loop ms' m' w'' =
+        WGen $ \ds mxev' ->
+            case mxev' of
+              Left _ -> do
+                  (mx, w) <- stepWire w'' ds (fmap fst mxev')
+                  return (mx, loop ms' m' w)
+              Right (x', ev) -> do
+                  let (ms, m, w') = switch ms' m' w'' ev
+                  (mx, w) <- stepWire w' ds (Right x')
+                  return (mx, loop ms m w)
+
+    switch ms' m' w' NoEvent = (ms', m', w')
+    switch ms' m' w' (Event m) =
+        let ms = M.insert m' w' ms' in
+        case M.lookup m ms of
+          Nothing -> (ms, m, select m)
+          Just w  -> (M.delete m ms, m, w)
+-}
+
+{-
+setParam :: ( Select path universe
+            ) => Param param -> Proxy path -> universe -> IO ()
+setParam (Param val) _ universe = pure ()
+-}
+-- instance (Select (Label lbl) universes) => Select (Label lbl) (universe :+: universes) where
+--  select lbl (u :+: us) =  select (Proxy :: Proxy (Label lbl)) us
+
+  -- undefined -- select lbl us -- undefined -- 1 :: Int -- select lbl us
+    -- undefined :: Int -- SubUniverse (Label lbl) (universe :+: universes)
+    -- select undefined us -- (select lbl us) :: SubUniverse ('Label lbl) (universes)
+
+{-
+class Select (path :: Path) (universe :: *) where
+  type SubUniverse path universe
+  select :: Proxy path -> universe -> (SubUniverse path universe)
+
+instance Select Here universe where
+  type SubUniverse Here universe = universe
+  select _ u = u
+
+instance Select (Label lbl) (Labeled lbl universe) where
+  type SubUniverse (Label lbl) (Labeled lbl universe) = universe
+  select _ (Labeled u) = u
+
+instance Select (Label lbl) (Labeled lbl universe :+: universes) where
+  type SubUniverse (Label lbl) (Labeled lbl universe :+: universes) = universe
+  select _ (Labeled u :+: universes) = u
+
+instance (Select (Label lbl) universes) => Select (Label lbl) (Labeled lbl' universe :+: universes) where
+  type SubUniverse (Label lbl) (Labeled lbl' universe :+: universes) = SubUniverse (Label lbl) universes
+  select lbl (u :+: us) = select lbl us
+
+instance (KnownNat n, CmpNat m n ~ GT) => Select (At n) (Indexed m universe) where
+  type SubUniverse (At n) (Indexed m universe) = universe
+  select at (Indexed us) = us !! (fromIntegral $ natVal (Proxy :: Proxy n))
+
+instance (KnownNat n, CmpNat m n ~ GT) => Select (At n) (Labeled lbl (Indexed m universe)) where
+  type SubUniverse (At n) (Labeled lbl (Indexed m universe)) = universe
+  select at (Labeled (Indexed us)) = us !! (fromIntegral $ natVal (Proxy :: Proxy n))
+-}
+{-
+instance Select (AT 0) (universe :+: universes) where
+  type SubUniverse (AT 0) (universe :+: universes) = universe
+  select _ (u :+: us) = u
+-}
+{- This works until we try to have a list of paths. We need a way to select sub universes.
+class SetParam param path universe where
+  setParam :: Param param -> path -> universe -> Frame -> IO ()
+
+{-
+MVector.replicate 30 0 >>= \frame -> (setParam (green 10) here hex12p1 frame) >> (setParam (red 10) here hex12p1 frame) >> (print =<< Vector.freeze frame)
+-}
+instance ( Member param params ~ True
+         , KnownNat (ParamNat (Proxy param) (Proxy params))
+         ) =>
+         SetParam param (PATH Here) (Fixture params) where
+  setParam (Param val) _ (Fixture address) frame =
+    let n = natVal (Proxy :: Proxy (ParamNat (Proxy param) (Proxy params)))
+    in write frame ((fromIntegral address) + (fromIntegral n)) val
+{-
+MVector.replicate 30 0 >>= \frame -> (setParam (green 10) here hex12p1 frame) >> (setParam (red 10) here hex12p1 frame) >> (print =<< Vector.freeze frame)
+-}
+instance (SetParam param (PATH Here) fixture) =>
+         SetParam param (PATH (Labeled lbl)) (Label lbl fixture) where
+  setParam p _ (Label fixture) frame = setParam p (PATH :: PATH Here) fixture frame
+
+{-
+MVector.replicate 30 0 >>= \frame -> (setParam (green 10) (PATH :: PATH (At 0)) (ultrabar 9) frame) >> (print =<< Vector.freeze frame)
+-}
+instance (SetParam param (PATH Here) fixtureA) =>
+         SetParam param (PATH (At 0)) (fixtureA :+: rest) where
+  setParam p _ (fixtureA :+: _) frame = setParam p (PATH :: PATH Here) fixtureA frame
+
+instance (SetParam param (PATH Here) fixtureA) =>
+         SetParam param (PATH (At 0)) (fixtureA) where
+  setParam p _ (fixtureA) frame = setParam p (PATH :: PATH Here) fixtureA frame
+
+{-
+MVector.replicate 30 0 >>= \frame -> (setParam (green 10) (PATH :: PATH (At 2)) (ultrabar 9) frame) >> (print =<< Vector.freeze frame)
+-}
+instance (CmpNat n 0 ~ GT, SetParam param (PATH (At (n - 1))) fixtures) =>
+         SetParam param (PATH (At n)) (fixture :+: fixtures) where
+  setParam p _ (_ :+: fixtures) frame = setParam p (PATH :: PATH (At (n - 1))) fixtures frame
+
+instance (SetParam param (PATH (path :+: paths)) universe) where
+setParam p _ universe frame = setParam p (PATH ::
+-}
+{-
+  do v <- MVector.new 10
+     MVector.set v 0
+--     setParam (Param 12 :: Param 'Green) ultrabar1 v
+--     s <- openSerial dmxPort defaultSerialSettings { commSpeed = dmxBaud }
+     v' <- Vector.freeze v
+     print (Vector.toList v')
+-}
+{-
+              Right ev -> do
+                  let (ms, w') = switch ms' w'' ev
+                  (mx, w) <- stepWire w' ds mxev' -- (Right ev)
+                  return (mx, loop ms w)
+
+    switch ms' w' NoEvent = (ms', w')
+    switch ms' w' (Event input) =
+      case input of
+            (ME (MidiEvent _time midiMessage)) ->
+              case midiMessage of
+                (MidiMessage _channel mm) ->
+                  case mm of
+                    (NoteOn key vel) ->
+                      case key of
+--                       0 -> (Map.insert 0 redBlue ms')
+--                        1 -> (Map.insert 1 strobe ms')
+                        _ -> (ms', w')
+                    _ -> (ms', w')
+                _ -> (ms', w')
+--      in (ms, foldLights (Map.elems ms))
+-}
+
+{-
+This solution does not work because any time an Event is triggered it restarts the wires.
+
+midiModes :: MidiLights
+midiModes = loop (Map.fromList [(0,redBlue)]) redBlue
+    where
+    loop ms' w'' =
+        WGen $ \ds mxev' ->
+            case mxev' of
+              Left _ -> do
+                  (mx, w) <- stepWire w'' ds mxev'
+                  return (mx, loop ms' w)
+
+              Right ev -> do
+                  let (ms, w') = switch ms' w'' ev
+                  (mx, w) <- stepWire w' ds mxev' -- (Right ev)
+                  return (mx, loop ms w)
+
+    switch ms' w' NoEvent = (ms', w')
+    switch ms' w' (Event input) =
+      case input of
+            (ME (MidiEvent _time midiMessage)) ->
+              case midiMessage of
+                (MidiMessage _channel mm) ->
+                  case mm of
+                    (NoteOn key vel) ->
+                      case key of
+--                       0 -> (Map.insert 0 redBlue ms')
+--                        1 -> (Map.insert 1 strobe ms')
+                        _ -> (ms', w')
+                    _ -> (ms', w')
+                _ -> (ms', w')
+--      in (ms, foldLights (Map.elems ms))
+{-
+    switch ms' m' w' (Event m) =
+        let ms = M.insert m' w' ms' in
+        case M.lookup m ms of
+          Nothing -> (ms, m, select m)
+          Just w  -> (M.delete m ms, m, w)
+-}
+-}
+
+
+
+-- updateMap' :: Midi2Seq -> MidiWire (Event Input) (Midi2Seq, Event Input)
+{-
+updateMap' m2s =
+  proc e ->
+  do o <- (let mmm =
+                  (case e of
+                    (Event (ME (MidiEvent _time midiMessage))) ->
+                      case midiMessage of
+                        (MidiMessage _channel mm) ->
+                          case mm of
+                            (NoteOn key vel) ->
+                              case key of
+                               0 -> Map.insert 0 redBlue m2s
+                               1 -> Map.insert 1 strobe m2s)
+             in mmm) -< ()
+
+       returnA -< o
+-}
+{-
+    let m2s' = case e of
+               (Event (ME (MidiEvent _time midiMessage))) ->
+                 case midiMessage of
+                   (MidiMessage _channel mm) ->
+                     case mm of
+                       (NoteOn key vel) ->
+                         case key of
+                           0 -> Map.insert 0 redBlue m2s
+                           1 -> Map.insert 1 strobe m2s
+    in foldLights (Maps.elem m2s')
+--       returnA -< (m2s', e)
+-}
+
+{-
+midi2seq :: Midi2Seq -> MidiLights
+midi2seq m2s =
+       o <- foldLights (Map.elems m2s') -< e
+       returnA -< o
+-}
+
+
+{-
+midi2seq = loop $
+  proc (e, m2s) ->
+    do let m2s' =
+             case e of
+               (Event (ME (MidiEvent _time midiMessage))) ->
+                 case midiMessage of
+                   (MidiMessage _channel mm) ->
+                     case mm of
+                       (NoteOn key vel) ->
+                         case key of
+                           0 -> Map.insert 0 redBlue m2s
+                           1 -> Map.insert 1 strobe m2s
+       s <- ( \(e, m2s) -> foldLights (Map.elems m2s')) -< (e, m2s')
+       returnA -< (s, m2s')
+-}
+{-
+  let onTime = 1 in
+    proc _ ->
+     do t <- fmap (`mod` quarter) time -< ()
+        returnA -< for 1 . setParam (white 255) (select hex12p1 universe)
+{-
+        asum [ when (== 0)          >>> setParam (white 255) (select hex12p1 universe)
+--             , when (== 0 + onTime) >>> []
+             ] -< t
+  -}
+-}
+{-
+nowNow :: MidiLights
+nowNow =
+  periodic 1 . (pure [Print "now"])
+
+fadeOut :: MidiLights
+fadeOut =
+        proc midi ->
+          do t <- time -< ()
+             v <- integral 0 -< 1 -- (fromIntegral t)
+             q <- (periodic 1 . arr (\v -> pure (F $ setParam (red (floor v)) (select hex12p1 universe)))) &&& (became (> 25)) -< v
+             until -< q
+
+fades = fadeOut --> fades
+
+strobe :: MidiWire Int [OutputEvent] -> MidiWire Int [OutputEvent] -> MidiLights
+strobe on off =
+  let onTime = 10 in
+  periodic 1 .
+    proc _ ->
+     do t <- fmap (`mod` quarter) time -< ()
+        asum [ when (== 0)          >>> on
+             , when (== 0 + onTime) >>> off
+             ] -< t
+onWhite, offWhite :: MidiWire Int [OutputEvent]
+onWhite = pure [(F $ setParam (white 255) (select hex12p1 universe))]
+offWhite = pure [(F $ setParam (white 0) (select hex12p1 universe))]
+
+redBlue :: MidiLights
+--redBlue = for quarter . now . (pure (MVector.replicate 30 0) >>= \v -> pure [F v]) -->
+redBlue =
+  let dur = quarter + 1 in
+   for dur . now . (pure [F $ setParam (red 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (green 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (blue 255) (select hex12p1 universe)]) -->
+   for dur . now . (pure [F $ setParam (white 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (amber 255) (select hex12p1 universe)]) -->
+   for (eighth + 1) . now . (pure [F $ setParam (uv 255) (select hex12p1 universe)]) -->
+   redBlue
+
+midiMap :: MidiLights -- MidiWire (Event Action) (Event [OutputEvent])
+midiMap =
+  proc e ->
+    case e of
+      Event me@(ME (MidiEvent _time midiMessage)) ->
+        case midiMessage of
+          (MidiMessage _channel mm) ->
+            case mm of
+              (NoteOn key vel) ->
+                redBlue -< e
+              _ -> returnA -< NoEvent
+          _ -> returnA -< NoEvent
+      _ -> returnA -< NoEvent
+
+midiMode :: MidiWire (Event Action) (Event Action, Event Int)
+midiMode =
+  proc e ->
+    case e of
+      Event me@(ME (MidiEvent _time midiMessage)) ->
+        case midiMessage of
+          (MidiMessage _channel mm) ->
+            case mm of
+              (NoteOn key vel) ->
+                returnA -< (e, Event key)
+              _ -> returnA -< (e, NoEvent)
+          _ -> returnA -< (e, NoEvent)
+
+midiMap2 :: MidiLights
+midiMap2 = midiMode >>> (modes 0 pickMode)
+  where
+    pickMode k =
+      case k of
+        0 -> redBlue
+        1 -> strobe onWhite offWhite
+
+multi :: MidiLights
+multi =
+  proc e ->
+   do rb <- redBlue -< e
+      s <- strobe onWhite offWhite -< e
+      returnA -< mergeOutput s rb
+
+--    case e of
+{-
+      Tick -> returnA -< NoEvent
+
+        case midiMessage of
+          (MidiMessage _channel (NoteOn key vel)) ->
+            case key of
+              0 -> returnA -< undefined
+-}
+-}
+
+{-
+  for quarter . now . MVector.replicate 30 0 -->
+  for quarter . now . MVector.replicate 30 1 -->
+  redBlue
+-}

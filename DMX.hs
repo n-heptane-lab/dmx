@@ -410,8 +410,12 @@ midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
                     case mm of
                       (NoteOn key vel) ->
                         case key of
-                          60 -> (Map.insert key redBlue ms')
-                          61 -> (Map.insert key strobe ms')
+                          0 -> (Map.insert key redBlue ms')
+                          1 -> (Map.insert key strobe ms')
+                          2 -> (Map.insert key gbDerbys ms')
+                          3 -> (Map.insert key allRedBlue ms')
+                          4 -> (Map.insert key gbStrobes1 ms')
+                          5 -> (Map.insert key gbStrobes1' ms')
                           _ -> ms'
                       (NoteOff key vel) -> Map.delete key ms'
                       _ -> ms'
@@ -436,10 +440,11 @@ multi =
 
 allRedBlue =
   proc e ->
-     do rb <- redBlueU (select slimPar64_1 universe :+: select ultrabar_1 universe ) -< e
+     do rb <- redBlueU (select slimPar64_1 universe :+: select ultrabar_1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
         m  <- pure $ setParam (master 255) (select slimPar64_1 universe :+: select hex12p1 universe) -< e
-        s <- strobe -< e
-        returnA -< mergeParams s (mergeParams rb m)
+        parsM <- pure $ sp (ParConRGB 127) (let u = select gb_1 universe in select gb_par_1 u :+: select gb_par_2 u) -< e
+--        s <- strobe -< e
+        returnA -< mergeParamsL [rb,m, parsM]
 
 mergeOutput :: Event [OutputEvent] -> Event [OutputEvent] -> Event [OutputEvent]
 mergeOutput NoEvent e = e
@@ -496,7 +501,7 @@ serialOutput port params = liftIO $
          frame <- MVector.replicate (7+7+18+20) 0
          mapM_ (\(addr, val) -> write frame (fromIntegral (addr - 1)) val) params
          vals <- Vector.toList <$> Vector.freeze frame
---         print vals
+         -- print vals
          -- print vals
          -- print (B.length (B.pack $ stuff vals))
          -- print (stuff vals)
@@ -637,9 +642,11 @@ blackout = arr (const [])
 
 redBlue :: MidiLights
 redBlue =
-  let dur = quarter + 1 in
-  for dur . pure (setParam (red 255) (select hex12p1 universe)) -->
-  for dur . pure (setParam (blue 255) (select hex12p1 universe)) -->
+  let dur = quarter + 1
+      u = (select hex12p1 universe)
+  in
+  for dur . pure (concat [setParam (red 255) u, setParam (master 255) u]) -->
+  for dur . pure (concat [setParam (blue 255) u, setParam (master 255) u]) -->
   redBlue
 
 redBlueU :: (SetParam 'Red universe, SetParam 'Blue universe) => universe -> MidiLights
@@ -650,17 +657,17 @@ redBlueU u =
   redBlueU u
 
 
-pulsar :: MidiLights
-pulsar =
-  (for 255 .
+-- pulsar :: MidiLights
+pulsar u =
+  (for (quarter + 1) .
      proc midi ->
        do t <- time -< ()
-          returnA -< (setParam (green (fromIntegral t)) (select hex12p1 universe))) -->
-  (for 255 .
+          returnA -< (setParam (red (fromIntegral (t * 10))) u)) -->
+  (for (quarter + 1) .
      proc midi ->
        do t <- time -< ()
-          returnA -< (setParam (green (fromIntegral (255 - t))) (select hex12p1 universe))) -->
-  pulsar
+          returnA -< (setParam (red (fromIntegral (255 - (t*10)))) u)) -->
+  pulsar u
 
 strobe :: MidiLights
 strobe  =
@@ -827,7 +834,6 @@ type Universe =
 universe :: Universe
 universe = def_hex12p1 :+: def_slimPar64_1 :+: def_ultrabar_1 :+: def_gb_1
 
-
 gbRedBlue =
   let par1 = (select gb_par_1 (select gb_1 universe))
       par2 = (select gb_par_2 (select gb_1 universe))
@@ -866,7 +872,6 @@ gbDerbyRot' db1 =
   in for dur . pure (setParam (derbyRotation (DerbyCounterClockwise 100)) db1) -->
      for dur . pure (setParam (derbyRotation (DerbyClockwise 100)) db1) -->
      gbDerbyRot' db1
-
 
 gbDerbyStrobe db =
   pure (setParam (derbyStrobe (DerbyStrobeRate 228)) db)
@@ -961,16 +966,24 @@ strobeDimmer lzr =
   pure $ setParam (gbStrobeDimmer 255) lzr
 
 strobeSpeed lzr =
-  pure $ setParam (gbStrobeSpeed 200) lzr
+  pure $ setParam (gbStrobeSpeed 222) lzr
 
 gbStrobes1 :: MidiLights
 gbStrobes1 =
     let strb = select gb_strobe (select gb_1 universe)
     in proc e ->
-         do p <- strobePattern strb -< e
+         do s <- strobeSpeed strb -< e
+            p <- strobePattern strb -< e
             d <- strobeDimmer strb -< e
-            s <- strobeSpeed strb -< e
             returnA -< mergeParamsL [p,d,s]
+
+gbStrobes1' :: MidiLights
+gbStrobes1' =
+    let strb = select gb_strobe (select gb_1 universe)
+    in proc e ->
+         do s <- strobeSpeed strb -< e
+            p <- strobePattern strb -< e
+            returnA -< mergeParamsL [p,s]
 
 gbBlackout gb =
   let par1   = select gb_par_1 gb
@@ -988,13 +1001,21 @@ gbBlackout gb =
          s  <- pure $ setParam (gbStrobePattern GBStrobeBlackout) strobe -< e
          returnA -< mergeParamsL [p1,p2, d1, d2]
 
+pulsarPar1 :: MidiLights
+pulsarPar1 =
+  let p1 = (select gb_par_1 (select gb_1 universe)) in
+  proc e ->
+    do p <- pulsar p1 -< e
+       m <- pure $ sp (ParConRGB 100) p1 -< e
+       returnA -< mergeParamsL [p,m]
+
 main :: IO ()
 main =
   do queue <- atomically newTQueue
      bracket (createDestination "DMX" (Just $ callback queue)) (\c -> putStrLn "disposing of connection." >> disposeConnection c) $ \midiIn ->
        bracket_ (start midiIn) (putStrLn "closing midi" >> MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession (gbBlackout (select gb_1 universe)) -- allRedBlue -- midiModes
+         do runShow queue (serialOutput s) beatSession midiModes
 
 --     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
 --        do runShow queue printOutput beatSession redBlue -- nowNow

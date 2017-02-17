@@ -12,6 +12,7 @@
 {-# language Arrows #-}
 module Main where
 
+import Color (HSL(..), RGB(..), hsl2rgb, rgb2hsl, rgb_d2w)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVar, putTMVar, takeTMVar, tryTakeTMVar)
@@ -123,6 +124,51 @@ amber = Param
 
 white :: Value -> Param White
 white = Param
+
+-- orange :: [Param Red, Param Green, Param Blue]
+orange :: Param 'Red :+: (Param 'Green :+: Param 'Blue)
+orange = red 244 :+: green 164 :+: blue 66
+
+
+flame u =
+  let dur = whole
+      maxH = 25
+      minH = 0
+  in
+  (for (dur + 1) .
+     proc midi ->
+       do t <- time -< ()
+          let p = (fromIntegral t)/(fromIntegral dur) :: Double
+          returnA -< (setParams (hsl $ HSL (minH + ((maxH-minH)*p)) 1 0.5) u)) -->
+  (for (dur + 1) .
+     proc midi ->
+       do t <- time -< ()
+          let p = (fromIntegral t)/(fromIntegral dur)
+          returnA -< (setParams (hsl $ HSL (maxH - ((maxH-minH)*p)) 1 0.5) u)) -->
+  flame u
+
+masters =
+  let par1 = (select gb_par_1 (select gb_1 universe))
+      par2 = (select gb_par_2 (select gb_1 universe))
+  in proc e ->
+      do m1  <- pure $ setParam (master 255) (select slimPar64_1 universe :+: select hex12p1 universe) -< e
+         m2  <- pure $ setParam (parCon $ ParConRGB 127) (par1 :+: par2) -< e
+         returnA -< mergeParams m1 m2
+
+flames =
+  proc e ->
+    do f <- flame (select slimPar64_1 universe :+: select ultrabar_1 universe :+: select hex12p1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       m <- masters -< e
+       returnA -< mergeParamsL [f,m]
+
+-- | HSL to RGB
+-- h = 0 to 360
+-- s = 0 to 1
+-- l = 0 to 1
+hsl :: HSL Double -> Param 'Red :+: (Param 'Green :+: Param 'Blue)
+hsl v =
+  case rgb_d2w (hsl2rgb v) of
+    (RGB r g b) -> red r :+: green g :+: blue b
 
 uv :: Value -> Param UV
 uv = Param
@@ -301,6 +347,21 @@ type Frame = IOVector Value
 
 data Param (a :: Parameter) = Param Value
 
+class ShowParameter p where
+  showParameter :: Param p -> String
+
+instance ShowParameter Red where showParameter _ = show Red
+instance ShowParameter Blue where showParameter _ = show Blue
+instance ShowParameter Green where showParameter _ = show Green
+instance ShowParameter Amber where showParameter _ = show Amber
+instance ShowParameter White where showParameter _ = show White
+instance ShowParameter UV where showParameter _ = show UV
+instance ShowParameter Master where showParameter _ = show Master
+
+instance (ShowParameter p) => Show (Param p) where
+  show p@(Param v) = "Param { " ++ showParameter p  ++ " = " ++ show v ++ " }"
+
+
 type family Member (a :: k) (l :: [k]) :: Bool where
   Member a '[] = False
   Member a (a ': bs) = True
@@ -373,8 +434,20 @@ updateMap m2s =
                            1 -> Map.insert 1 strobe m2s
        returnA -< (e, Event m2s')
 
-midiModes :: MidiLights
-midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
+modeMap :: Map Int MidiLights
+modeMap = Map.fromList
+  [ (0, redBlue)
+  , (1, strobe)
+  , (2, gbDerbys)
+  , (3, allRedBlue)
+  , (4, gbStrobes1)
+  , (5, gbStrobes1')
+  , (6, flames)
+  ]
+
+
+midiModes :: Map Int MidiLights -> MidiLights
+midiModes midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
     where
     loop ms'' =
         WGen $ \ds mxev' ->
@@ -409,6 +482,10 @@ midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
                   (MidiMessage _channel mm) ->
                     case mm of
                       (NoteOn key vel) ->
+                        case Map.lookup key midiModes of
+                          Nothing -> ms'
+                          (Just m) -> Map.insert key m ms'
+{-
                         case key of
                           0 -> (Map.insert key redBlue ms')
                           1 -> (Map.insert key strobe ms')
@@ -417,6 +494,7 @@ midiModes = loop (Map.fromList []) -- [(0,redBlue), (1, strobe)])
                           4 -> (Map.insert key gbStrobes1 ms')
                           5 -> (Map.insert key gbStrobes1' ms')
                           _ -> ms'
+-}
                       (NoteOff key vel) -> Map.delete key ms'
                       _ -> ms'
                   _ -> ms'
@@ -497,7 +575,7 @@ serialOutput port params = liftIO $
     (Print str) -> putStrLn str
     (F params)   ->
 -}
-      do print params
+      do -- print params
          frame <- MVector.replicate (7+7+18+20) 0
          mapM_ (\(addr, val) -> write frame (fromIntegral (addr - 1)) val) params
          vals <- Vector.toList <$> Vector.freeze frame
@@ -617,6 +695,19 @@ instance (SetParam param u) => SetParam param (Indexed n u) where
 instance (SetParam param u, SetParam param us) => SetParam param (u :+: us) where
   setParam p  (u :+: us) =
     setParam p u ++ setParam p us
+
+-- * SetParams
+
+class SetParams params universe where
+  setParams :: params -> universe -> [(Address, Value)]
+
+instance {-# OVERLAPPING #-} (SetParam p1 universe, SetParam p2 universe) => SetParams (Param p1 :+: Param p2) universe where
+  setParams (p1 :+: p2) universe =
+    (setParam p1 universe) ++ (setParam p2 universe)
+
+instance {-# OVERLAPPING #-} (SetParam p universe, SetParams ps universe) => SetParams (Param p :+: ps) universe where
+  setParams (p :+: ps) universe =
+    (setParam p universe) ++ (setParams ps universe)
 
 -- * ParamVal
 
@@ -1015,7 +1106,7 @@ main =
      bracket (createDestination "DMX" (Just $ callback queue)) (\c -> putStrLn "disposing of connection." >> disposeConnection c) $ \midiIn ->
        bracket_ (start midiIn) (putStrLn "closing midi" >> MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession midiModes
+         do runShow queue (serialOutput s) beatSession (midiModes modeMap)
 
 --     bracket (openSource userPortOut (Just $ callback queue)) MIDI.close $ \midiIn ->
 --        do runShow queue printOutput beatSession redBlue -- nowNow

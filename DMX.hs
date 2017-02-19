@@ -125,11 +125,55 @@ amber = Param
 white :: Value -> Param White
 white = Param
 
+rgbWhite :: Value -> Param 'Red :+: (Param 'Green :+: Param 'Blue)
+rgbWhite v =
+  red v :+: green v :+: blue v
+
 -- orange :: [Param Red, Param Green, Param Blue]
 orange :: Param 'Red :+: (Param 'Green :+: Param 'Blue)
 orange = red 244 :+: green 164 :+: blue 66
 
+data Waveform
+  = Sine
+  | Tri
+  | Square
+  | PWM Float
+    deriving (Eq, Show)
 
+lfo :: Waveform -> Int -> Double -> MidiWire a Double
+lfo Sine period phase =
+  let i = (2*pi) / (fromIntegral period)
+  in proc _ ->
+      do t <- time -< () -- time in ticks, 96 ticks per measure
+         returnA -< sin ((i * fromIntegral t) + phase)
+
+flame u p =
+  let dur = whole * 2
+      maxH = 25
+      minH = 0
+  in
+    proc _ ->
+      do l <- lfo Sine dur p -< ()
+         let a = 15
+             o = 15
+             v' = (l * a) + o
+             h = if v' < 0 then 360 + v' else v'
+         returnA -< setParams (hsl $ HSL h 1 0.5) u
+--         returnA -< 
+{-
+  (for (dur + 1) .
+     proc midi ->
+       do t <- time -< ()
+          let p = (fromIntegral t)/(fromIntegral dur) :: Double
+          returnA -< (setParams (hsl $ HSL (minH + ((maxH-minH)*p)) 1 0.5) u)) -->
+  (for (dur + 1) .
+     proc midi ->
+       do t <- time -< ()
+          let p = (fromIntegral t)/(fromIntegral dur)
+          returnA -< (setParams (hsl $ HSL (maxH - ((maxH-minH)*p)) 1 0.5) u)) -->
+  flame u
+-}
+{-
 flame u =
   let dur = whole
       maxH = 25
@@ -146,6 +190,7 @@ flame u =
           let p = (fromIntegral t)/(fromIntegral dur)
           returnA -< (setParams (hsl $ HSL (maxH - ((maxH-minH)*p)) 1 0.5) u)) -->
   flame u
+-}
 
 masters =
   let par1 = (select gb_par_1 (select gb_1 universe))
@@ -157,9 +202,91 @@ masters =
 
 flames =
   proc e ->
-    do f <- flame (select slimPar64_1 universe :+: select ultrabar_1 universe :+: select hex12p1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+    do -- f <- flame (select slimPar64_1 universe :+: select ultrabar_1 universe :+: select hex12p1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       f1 <- flame (select slimPar64_1 universe) 0     -< e
+       f2 <- flame (select ultrabar_1 universe) (pi/2) -< e
+       f3 <- flame (select hex12p1 universe)    (pi)   -< e
+       f4 <- flame (select gb_par_1 (select gb_1 universe)) (3*pi/2)   -< e
+       f5 <- flame (select gb_par_2 (select gb_1 universe)) (3*pi/2)   -< e
+--        :+: select ultrabar_1 universe :+: select hex12p1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)
+       d1  <- pure (setParams ((derbyCon DerbyConRed) :+: (derbyRotation (DerbyClockwise 100))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConRed) :+: (derbyRotation (DerbyCounterClockwise 100))) (select gb_derby_2 (select gb_1 universe))) -< e
        m <- masters -< e
-       returnA -< mergeParamsL [f,m]
+       returnA -< mergeParamsL [m, f1, f2, f3, f4, f5, d1, d2]
+
+pulse :: (Num n) => Int -> MidiWire a n
+pulse dur =
+ (for (5) . pure 1) --> (for (dur - 3) . pure 0) --> pulse dur
+
+pulseWhite dur =
+  proc e ->
+    do m <- masters -< e
+       strb <- gbStrobes1 -< e
+       p1 <- pulse dur -< e
+       p2 <- (for sixteenth . pure 0) --> pulse dur -< e
+       p3 <- (for (2*sixteenth) . pure 0) --> pulse dur -< e
+       p4 <- (for (3*sixteenth) . pure 0) --> pulse dur -< e
+       h <- arr (\p -> setParam (white (p*255)) (select hex12p1 universe)) -< p1
+       u <- arr (\p -> setParams (rgbWhite (p*255)) (select ultrabar_1 universe)) -< p2
+       p <- arr (\p -> setParams (rgbWhite (p*255)) ((select gb_par_1 (select gb_1 universe)) :+: (select gb_par_2 (select gb_1 universe)))) -< p3
+       s <- arr (\p -> setParams (rgbWhite (p*255)) (select slimPar64_1 universe)) -< p4
+       returnA -< mergeParamsL [m, h, u, p, s, strb]
+
+pulseChaos dur =
+  proc e ->
+    do m <- masters -< e
+       p1 <- pulse dur -< e
+       p2 <- (for sixteenth . pure 0) --> pulse dur -< e
+       p3 <- (for (2*sixteenth) . pure 0) --> pulse dur -< e
+       p4 <- (for (3*sixteenth) . pure 0) --> pulse dur -< e
+       h <- arr (\p -> setParam (white (p*255)) (select hex12p1 universe)) -< p1
+       u <- arr (\p -> setParam (red (p*255)) (select ultrabar_1 universe)) -< p2
+       p <- arr (\p -> setParam (blue (p*255)) ((select gb_par_1 (select gb_1 universe)) :+: (select gb_par_2 (select gb_1 universe)))) -< p3
+       s <- arr (\p -> setParam (green (p*255)) (select slimPar64_1 universe)) -< p4
+       returnA -< mergeParamsL [m, h, u, p, s]
+
+redGreen dur =
+  proc e ->
+    do m <- masters -< e
+       l1 <- lfo Sine dur 0 -< ()
+       l2 <- lfo Sine dur pi -< ()
+       d1  <- pure (setParams ((derbyCon DerbyConRedGreen) :+: (derbyRotation (DerbyClockwise 100))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConRedGreen) :+: (derbyRotation (DerbyCounterClockwise 100))) (select gb_derby_2 (select gb_1 universe))) -< e
+       returnA -< concat [ m, d1, d2
+                         , setParams (hsl $ HSL ((l1 + 1)*75) 1 0.5) (select hex12p1 universe)
+                         , setParams (hsl $ HSL ((l1 + 1)*75) 1 0.5) (select ultrabar_1 universe)
+                         , setParams (hsl $ HSL ((l2 + 1)*75) 1 0.5) (select slimPar64_1 universe)
+                         , setParams (hsl $ HSL ((l2 + 1)*75) 1 0.5) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
+                         ]
+--       v1 <- arr
+{-  
+   proc e ->
+      do m <- masters -< e
+         h <- pure $ setParam (white 255) (select hex12p1 universe) -< e
+         returnA -< mergeParamsL [m, h]) -->
+ (for (dur-3) .
+   proc e ->
+      do m <- masters -< e
+         h <- pure $ setParam (white 0) (select hex12p1 universe) -< e
+         returnA -< mergeParamsL [m, h]) -->
+ pulse dur
+-}
+{-
+pulse :: Int -> MidiLights
+pulse dur =
+ (for (5) .
+   proc e ->
+      do m <- masters -< e
+         h <- pure $ setParam (white 255) (select hex12p1 universe) -< e
+         returnA -< mergeParamsL [m, h]) -->
+ (for (dur-3) .
+   proc e ->
+      do m <- masters -< e
+         h <- pure $ setParam (white 0) (select hex12p1 universe) -< e
+         returnA -< mergeParamsL [m, h]) -->
+ pulse dur
+-}
+--       par <-
 
 -- | HSL to RGB
 -- h = 0 to 360
@@ -443,6 +570,9 @@ modeMap = Map.fromList
   , (4, gbStrobes1)
   , (5, gbStrobes1')
   , (6, flames)
+  , (7, pulseChaos quarter)
+  , (8, pulseWhite quarter)
+  , (9, redGreen whole)
   ]
 
 
@@ -544,7 +674,7 @@ mergeParamsL params =
     map maximum $ groupBy ((==) `on` fst) $ sort $ concat params
 
 
-sixteenth, eighth, quarter, whole :: Int
+sixteenth, eighth, quarter, whole :: (Num a) => a
 sixteenth  = 6
 eighth     = 12
 quarter    = 24

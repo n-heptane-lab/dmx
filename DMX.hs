@@ -137,6 +137,7 @@ data Waveform
   = Sine
   | Tri
   | Square
+  | Ramp
   | PWM Float
     deriving (Eq, Show)
 
@@ -146,6 +147,10 @@ lfo Sine period phase =
   in proc _ ->
       do t <- time -< () -- time in ticks, 96 ticks per measure
          returnA -< sin ((i * fromIntegral t) + phase)
+lfo Ramp period phase = -- FIXME phase
+  proc _ ->
+    do t <- time -< ()
+       returnA -< 1 - (fromIntegral period / (fromIntegral (t `mod` period)))
 
 flame u p =
   let dur = whole * 2
@@ -217,6 +222,20 @@ flames =
 pulse :: (Num n) => Int -> MidiWire a n
 pulse dur =
  (for (5) . pure 1) --> (for (dur - 3) . pure 0) --> pulse dur
+
+flickerPurple dur =
+  do proc e ->
+       do m <- masters -< e
+          p1 <- lfo Sine dur 0 -< e
+          p2 <- lfo Sine dur pi/2 -< e
+          p3 <- lfo Sine dur pi -< e
+          p4 <- lfo Sine dur 3*pi/2 -< e
+          returnA -< concat [ m
+                            , setParams (hsl $ HSL 290 1 (0.5+(p1*0.2))) (select hex12p1 universe)
+                            , setParams (hsl $ HSL 290 1 (0.5+(p2*0.2))) (select ultrabar_1 universe)
+                            , setParams (hsl $ HSL 290 1 (0.5+(p3*0.2))) (select slimPar64_1 universe)
+                            , setParams (hsl $ HSL 290 1 (0.5+(p4*0.2))) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
+                            ]
 
 pulseWhite dur =
   proc e ->
@@ -573,6 +592,7 @@ modeMap = Map.fromList
   , (7, pulseChaos quarter)
   , (8, pulseWhite quarter)
   , (9, redGreen whole)
+  , (10, flickerPurple quarter)
   ]
 
 

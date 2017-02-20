@@ -138,11 +138,11 @@ data Waveform
   | Tri
   | Square
   | Ramp
-  | PWM Float
+  | PWM Int
     deriving (Eq, Show)
 
 lfo :: Waveform -> Int -> Double -> MidiWire a Double
-lfo Sine period phase =
+lfo Sine period phase = -- FIMXE should be from 0 to 1, not -1 to 1
   let i = (2*pi) / (fromIntegral period)
   in proc _ ->
       do t <- time -< () -- time in ticks, 96 ticks per measure
@@ -150,7 +150,11 @@ lfo Sine period phase =
 lfo Ramp period phase = -- FIXME phase
   proc _ ->
     do t <- time -< ()
-       returnA -< 1 - (fromIntegral period / (fromIntegral (t `mod` period)))
+       returnA -< 1 - ((fromIntegral (t `mod` period)) / fromIntegral (period - 1))
+lfo (PWM onTime) period _ = -- FIXME phase
+  let loop =
+        (for (onTime + 1) . pure 1) --> (for ((period - onTime) + 1) . pure 0) --> loop
+  in loop
 
 flame u p =
   let dur = whole * 2
@@ -219,6 +223,93 @@ flames =
        m <- masters -< e
        returnA -< mergeParamsL [m, f1, f2, f3, f4, f5, d1, d2]
 
+fireworks1 =
+  proc e ->
+   do m <- masters -< e
+      l1 <- lfo Ramp eighth 0 -< e
+      l2 <- (for (thirtysecondth) . pure 0) --> lfo Ramp eighth 0 -< e
+      l3 <- (for (2*thirtysecondth) . pure 0) --> lfo Ramp eighth 0 -< e
+      l4 <- (for (2*thirtysecondth) . pure 0) --> lfo Ramp eighth 0 -< e
+      returnA -< concat [ m
+                        , setParams (hsl $ HSL 39 1 (0.61 * l1)) (select slimPar64_1 universe)
+                        , setParams (hsl $ HSL 39 1 (0.61 * l2)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
+                        , setParams (hsl $ HSL 39 1 (0.61 * l3)) (select ultrabar_1 universe)
+                        , setParam (amber (round (l4 * l4 * 255))) (select hex12p1 universe)
+                        ]
+
+ultraFlicker h s =
+  let dur = quarter
+      ultra = select ultrabar_1 universe
+  in proc e ->
+       do p1 <- lfo Sine dur 0 -< e
+          p2 <- (for sixteenth . pure 0) --> lfo Sine dur 0 -< e
+          p3 <- (for (sixteenth * 2) . pure 0) --> lfo Sine dur 0 -< e
+          p4 <- (for (sixteenth * 3) . pure 0) --> lfo Sine dur 0 -< e
+          p5 <- (for (sixteenth * 4) . pure 0) --> lfo Sine dur 0 -< e
+          p6 <- (for (sixteenth * 5) . pure 0) --> lfo Sine dur 0 -< e
+          returnA -< concat [ setParams (hsl $ HSL h s ((p1 + 1) / 2)) (select at0 ultra)
+                            , setParams (hsl $ HSL h s ((p2 + 1) / 2)) (select at1 ultra)
+                            , setParams (hsl $ HSL h s ((p3 + 1) / 2)) (select at2 ultra)
+                            , setParams (hsl $ HSL h s ((p4 + 1) / 2)) (select at3 ultra)
+                            , setParams (hsl $ HSL h s ((p5 + 1) / 2)) (select at4 ultra)
+                            , setParams (hsl $ HSL h s ((p6 + 1) / 2)) (select at5 ultra)
+                            ]
+
+ultraFlicker' h s =
+  let dur = quarter
+      ultra = select ultrabar_1 universe
+  in proc e ->
+       do p1 <- lfo Sine dur 0 -< e
+          p2 <- (for sixteenth . pure 0) --> lfo Sine dur 0 -< e
+          p3 <- (for (sixteenth * 2) . pure 0) --> lfo Sine dur 0 -< e
+          p4 <- (for (sixteenth * 3) . pure 0) --> lfo Sine dur 0 -< e
+          p5 <- (for (sixteenth * 4) . pure 0) --> lfo Sine dur 0 -< e
+          p6 <- (for (sixteenth * 5) . pure 0) --> lfo Sine dur 0 -< e
+          returnA -< concat [ setParams (hsl $ HSL h s (((p1 + 1) / 4))) (select at0 ultra)
+                            , setParams (hsl $ HSL h s (((p2 + 1) / 4))) (select at1 ultra)
+                            , setParams (hsl $ HSL h s (((p3 + 1) / 4))) (select at2 ultra)
+                            , setParams (hsl $ HSL h s (((p4 + 1) / 4))) (select at3 ultra)
+                            , setParams (hsl $ HSL h s (((p5 + 1) / 4))) (select at4 ultra)
+                            , setParams (hsl $ HSL h s (((p6 + 1) / 4))) (select at5 ultra)
+                            ]
+
+tanPars :: MidiLights
+tanPars =
+  proc e ->
+    do m <- masters -< e
+       t <- pure $ setParams (hsl (HSL 41 0.78  07.3)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       returnA -< mergeParamsL [ m, t ]
+
+cylon dur' p =
+  let dur = dur' + 1
+      ultra = select ultrabar_1 universe
+  in (for ((dur' * 2)+1) . pure (setParams p (select at0 ultra))) -->
+     (for dur . pure (setParams p (select at1 ultra))) -->
+     (for dur . pure (setParams p (select at2 ultra))) -->
+     (for dur . pure (setParams p (select at3 ultra))) -->
+     (for dur . pure (setParams p (select at4 ultra))) -->
+     (for ((dur' * 4)+1) . pure (setParams p (select at5 ultra))) -->
+     (for dur . pure (setParams p (select at4 ultra))) -->
+     (for dur . pure (setParams p (select at3 ultra))) -->
+     (for dur . pure (setParams p (select at2 ultra))) -->
+     (for dur . pure (setParams p (select at1 ultra))) -->
+     (for ((dur' * 2)+1) . pure (setParams p (select at0 ultra))) -->
+     cylon dur' p
+
+fireworks2 =
+  proc e ->
+   do m <- masters -< e
+      l1 <- lfo Ramp half 0 -< e
+      l2 <- (for (eighth) . pure 0) --> lfo Ramp half 0 -< e
+      l3 <- (for (2*eighth) . pure 0) --> lfo Ramp half 0 -< e
+      l4 <- (for (2*eighth) . pure 0) --> lfo Ramp half 0 -< e
+      returnA -< concat [ m
+                        , setParams (hsl $ HSL 323 1 (0.61 * l1)) (select slimPar64_1 universe)
+                        , setParams (hsl $ HSL 323 1 (0.61 * l2)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
+                        , setParams (hsl $ HSL 323 1 (0.61 * l3)) (select ultrabar_1 universe)
+                        , setParam (green (round (l4 * l4 * 255))) (select hex12p1 universe)
+                        ]
+
 pulse :: (Num n) => Int -> MidiWire a n
 pulse dur =
  (for (5) . pure 1) --> (for (dur - 3) . pure 0) --> pulse dur
@@ -237,6 +328,28 @@ flickerPurple dur =
                             , setParams (hsl $ HSL 290 1 (0.5+(p4*0.2))) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
                             ]
 
+flickerHSL dur h s =
+  do proc e ->
+       do m <- masters -< e
+          p1 <- lfo Sine dur 0 -< e
+          p2 <- lfo Sine dur pi/2 -< e
+          p3 <- lfo Sine dur pi -< e
+          p4 <- lfo Sine dur 3*pi/2 -< e
+          returnA -< concat [ m
+                            , setParams (hsl $ HSL h 1 (0.3+(p1*0.2))) (select hex12p1 universe)
+--                            , setParams (hsl $ HSL h 1 (0.5+(p2*0.2))) (select ultrabar_1 universe)
+                            , setParams (hsl $ HSL h 1 (0.3+(p3*0.2))) (select slimPar64_1 universe)
+                            , setParams (hsl $ HSL h 1 (0.3+(p4*0.19))) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
+                            ]
+
+
+strobeWhite dur p =
+  proc e ->
+    do m <- masters -< e
+       p <- lfo (PWM p) dur 0 -< e
+       returnA -< concat [ m
+                         , setParam (white (round (p * 255))) (select hex12p1 universe)
+                         ]
 pulseWhite dur =
   proc e ->
     do m <- masters -< e
@@ -593,6 +706,14 @@ modeMap = Map.fromList
   , (8, pulseWhite quarter)
   , (9, redGreen whole)
   , (10, flickerPurple quarter)
+  , (11, fireworks1)
+  , (12, fireworks2)
+  , (13, ultraFlicker 0 0)
+  , (14, tanPars)
+  , (15, cylon sixteenth (rgbWhite 255))
+  , (16, ultraFlicker' 41 1)
+  , (17, flickerHSL whole 34 0.54)
+  , (18, strobeWhite sixteenth 3)
   ]
 
 
@@ -694,7 +815,8 @@ mergeParamsL params =
     map maximum $ groupBy ((==) `on` fst) $ sort $ concat params
 
 
-sixteenth, eighth, quarter, whole :: (Num a) => a
+thirtysecondth, sixteenth, eighth, quarter, whole :: (Num a) => a
+thirtysecondth  = 3
 sixteenth  = 6
 eighth     = 12
 quarter    = 24
@@ -775,6 +897,24 @@ data Path
   | Label Symbol
   | At Nat
   | P [Path]
+
+at0 :: Proxy (At 0)
+at0 = Proxy
+
+at1 :: Proxy (At 1)
+at1 = Proxy
+
+at2 :: Proxy (At 2)
+at2 = Proxy
+
+at3 :: Proxy (At 3)
+at3 = Proxy
+
+at4 :: Proxy (At 4)
+at4 = Proxy
+
+at5 :: Proxy (At 5)
+at5 = Proxy
 
 type family ParamNat param params where
   ParamNat (Proxy a) (Proxy (a ': bs)) = 0

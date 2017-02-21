@@ -201,13 +201,16 @@ flame u =
   flame u
 -}
 
+masters :: MidiLights
 masters =
   let par1 = (select gb_par_1 (select gb_1 universe))
       par2 = (select gb_par_2 (select gb_1 universe))
+      laser = select gb_laser (select gb_1 universe)
   in proc e ->
       do m1  <- pure $ setParam (master 255) (select slimPar64_1 universe :+: select hex12p1 universe) -< e
          m2  <- pure $ setParam (parCon $ ParConRGB 127) (par1 :+: par2) -< e
-         returnA -< mergeParams m1 m2
+         l  <- laserOff laser -< e
+         returnA -< mergeParamsL [l, m1, m2]
 
 flames =
   proc e ->
@@ -255,9 +258,8 @@ ultraFlicker h s =
                             , setParams (hsl $ HSL h s ((p6 + 1) / 2)) (select at5 ultra)
                             ]
 
-ultraFlicker' h s =
-  let dur = quarter
-      ultra = select ultrabar_1 universe
+ultraFlicker' dur h s =
+  let ultra = select ultrabar_1 universe
   in proc e ->
        do p1 <- lfo Sine dur 0 -< e
           p2 <- (for sixteenth . pure 0) --> lfo Sine dur 0 -< e
@@ -332,23 +334,35 @@ flickerHSL dur h s =
   do proc e ->
        do m <- masters -< e
           p1 <- lfo Sine dur 0 -< e
-          p2 <- lfo Sine dur pi/2 -< e
+          p2 <- lfo Sine dur (3*pi/2) -< e
           p3 <- lfo Sine dur pi -< e
-          p4 <- lfo Sine dur 3*pi/2 -< e
+          p4 <- lfo Sine dur (pi/2) -< e
           returnA -< concat [ m
-                            , setParams (hsl $ HSL h 1 (0.3+(p1*0.2))) (select hex12p1 universe)
---                            , setParams (hsl $ HSL h 1 (0.5+(p2*0.2))) (select ultrabar_1 universe)
-                            , setParams (hsl $ HSL h 1 (0.3+(p3*0.2))) (select slimPar64_1 universe)
-                            , setParams (hsl $ HSL h 1 (0.3+(p4*0.19))) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
+                            , setParams (hsl $ HSL h s (0.3+(p1*0.2))) (select hex12p1 universe)
+                            , setParams (hsl $ HSL h s (0.3+(p3*0.2))) (select slimPar64_1 universe)
+                            , setParams (hsl $ HSL h s (0.3+(p2*0.2))) (select gb_par_1 (select gb_1 universe))
+                            , setParams (hsl $ HSL h s (0.3+(p4*0.2))) (select gb_par_2 (select gb_1 universe))
                             ]
 
+
+unisonWhitePulse dur =
+  do proc e ->
+       do m <- masters -< e
+          p1 <- lfo Sine dur 0 -< e
+          v <- arr (\p -> hsl (HSL 0 0 (0.3+(p * 0.2)))) -< p1
+          returnA -< concat [ m
+                            , setParams v  (select hex12p1 universe)
+                            , setParams v (select slimPar64_1 universe)
+                            , setParams v (select gb_par_1 (select gb_1 universe))
+                            , setParams v (select gb_par_2 (select gb_1 universe))
+                            ]
 
 strobeWhite dur p =
   proc e ->
     do m <- masters -< e
        p <- lfo (PWM p) dur 0 -< e
        returnA -< concat [ m
-                         , setParam (white (round (p * 255))) (select hex12p1 universe)
+                         , setParam (white (128 + round (p * 127))) (select hex12p1 universe)
                          ]
 pulseWhite dur =
   proc e ->
@@ -390,6 +404,59 @@ redGreen dur =
                          , setParams (hsl $ HSL ((l2 + 1)*75) 1 0.5) (select slimPar64_1 universe)
                          , setParams (hsl $ HSL ((l2 + 1)*75) 1 0.5) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe))
                          ]
+
+
+-- * My Love, My Friend
+
+slowBlueDerby :: MidiLights
+slowBlueDerby =
+  proc e ->
+    do d1  <- pure (setParams ((derbyCon DerbyConBlue) :+: (derbyRotation (DerbyClockwise 20))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConBlue) :+: (derbyRotation (DerbyCounterClockwise 20))) (select gb_derby_2 (select gb_1 universe))) -< e
+       returnA -< mergeParamsL [d1, d2]
+
+slowBlueGreenDerby :: Word8 -> MidiLights
+slowBlueGreenDerby v =
+  proc e ->
+    do d1  <- pure (setParams ((derbyCon DerbyConGreenBlue) :+: (derbyRotation (DerbyClockwise v))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConGreenBlue) :+: (derbyRotation (DerbyCounterClockwise v))) (select gb_derby_2 (select gb_1 universe))) -< e
+       returnA -< mergeParamsL [d1, d2]
+
+blueGreenBackground :: MidiLights
+blueGreenBackground =
+  proc e ->
+    do m <- masters -< e
+       pars <- pure $ setParams (hsl $ HSL 142 1 0.5)  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+--        pars <- pure $ setParams (green 255 :+: blue 30)  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       h <- pure $ setParam (uv 255) (select hex12p1 universe) -< e
+       slim <- pure $ setParams (hsl $ HSL 222 1 0.3) (select slimPar64_1 universe) -< e
+       returnA -< mergeParamsL  [m, h, pars, slim]
+
+
+blueGreenBackgroundPulse :: Int -> MidiLights
+blueGreenBackgroundPulse dur =
+  proc e ->
+    do m <- masters -< e
+--       h <- pure $ setParam (uv 255) (select hex12p1 universe) -< e
+       pars <- (lfo Sine dur 0) >>> (arr $ \p -> (setParams (hsl $ HSL 142 1 (0.3 + (p * 0.2)))  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)))) -< e
+       slim <- (lfo Sine dur pi) >>> (arr $ \p -> (setParams (hsl $ HSL 132 1 (0.3 + (p * 0.2))) (select slimPar64_1 universe))) -< e
+--       slim <- pure $ setParams (hsl $ HSL 222 1 0.3) (select slimPar64_1 universe) -< e
+       returnA -< mergeParamsL  [m, pars, slim]
+
+hexUV :: Int -> MidiLights
+hexUV v =
+  proc e ->
+    do m <- masters -< e
+       h <- pure $ setParam (uv 255) (select hex12p1 universe) -< e
+       returnA -< mergeParamsL [m, h]
+
+ultrabarSolid :: HSL Double -> MidiLights
+ultrabarSolid v =
+  proc e ->
+    do m <- masters -< e
+       h <- pure $ setParams (hsl v) (select ultrabar_1 universe) -< e
+       returnA -< mergeParamsL [m, h]
+
 --       v1 <- arr
 {-  
    proc e ->
@@ -469,7 +536,7 @@ derbyCon v =
     (DerbyConBlue)         -> Param $ 75
     (DerbyConRedGreen)     -> Param $ 100
     (DerbyConRedBlue)      -> Param $ 125
-    (DerbyConGreenBlue)    -> Param $ 125
+    (DerbyConGreenBlue)    -> Param $ 150
     (DerbyConRedGreenBlue) -> Param $ 175
     (DerbyConAuto1)        -> Param $ 200
     (DerbyConAuto2)        -> Param $ 225
@@ -711,9 +778,20 @@ modeMap = Map.fromList
   , (13, ultraFlicker 0 0)
   , (14, tanPars)
   , (15, cylon sixteenth (rgbWhite 255))
-  , (16, ultraFlicker' 41 1)
+  , (16, ultraFlicker' quarter 41 1) -- ultraFlicker orange
   , (17, flickerHSL whole 34 0.54)
   , (18, strobeWhite sixteenth 3)
+  , (19, flickerHSL half 0 0)
+  , (20, unisonWhitePulse quarter)
+  , (21, slowBlueDerby)
+  , (22, ultraFlicker' half 70 0.75) -- ultraFlicker yellow
+  , (23, blueGreenBackground)
+  , (24, blueGreenBackgroundPulse whole)
+  , (25, ultraFlicker' half 0 0) -- ultraFlicker slow white
+  , (26, hexUV 255)
+  , (27, slowBlueGreenDerby 40)
+  , (28, ultrabarSolid (HSL 240 1 0.5)) -- ultrabar blue
+  , (29, ultraFlicker' whole 240 1) -- ultrabar blue flicker
   ]
 
 

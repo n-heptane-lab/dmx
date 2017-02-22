@@ -48,6 +48,7 @@ import System.Environment (getArgs)
 import System.Hardware.Serialport as Serialport (CommSpeed(CS9600, CS115200), SerialPort, SerialPortSettings(commSpeed), closeSerial, defaultSerialSettings, openSerial, recv, send, flush)
 import System.MIDI as MIDI
 import System.MIDI.Utility as MIDI
+import System.Random (Random, StdGen, mkStdGen, randomR)
 
 withSerial :: FilePath -> CommSpeed -> (SerialPort -> IO a) -> IO a
 withSerial device speed f =
@@ -422,6 +423,13 @@ slowBlueGreenDerby v =
        d2  <- pure (setParams ((derbyCon DerbyConGreenBlue) :+: (derbyRotation (DerbyCounterClockwise v))) (select gb_derby_2 (select gb_1 universe))) -< e
        returnA -< mergeParamsL [d1, d2]
 
+greenDerby :: Word8 -> MidiLights
+greenDerby v =
+  proc e ->
+    do d1  <- pure (setParams ((derbyCon DerbyConGreen) :+: (derbyRotation (DerbyClockwise v))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConGreen) :+: (derbyRotation (DerbyCounterClockwise v))) (select gb_derby_2 (select gb_1 universe))) -< e
+       returnA -< mergeParamsL [d1, d2]
+
 blueGreenBackground :: MidiLights
 blueGreenBackground =
   proc e ->
@@ -456,6 +464,29 @@ ultrabarSolid v =
     do m <- masters -< e
        h <- pure $ setParams (hsl v) (select ultrabar_1 universe) -< e
        returnA -< mergeParamsL [m, h]
+
+randomD :: (Random a) => StdGen -> (a, a) -> MidiWire x a
+randomD initGen range =
+  (loop $ proc (_, gen) ->
+     do g <- delay initGen -< gen
+        let (d, gen') = randomR range g
+        returnA -< (d, gen'))
+
+
+static :: Double -> MidiLights
+static scale =
+  proc e ->
+    do r1 <- randomD (mkStdGen 123) (0,1::Double) -< ()
+       r2 <- randomD (mkStdGen 125) (0,1::Double) -< ()
+       r3 <- randomD (mkStdGen 121) (0,1::Double) -< ()
+       r4 <- randomD (mkStdGen 12) (0,1::Double) -< ()
+       m <- masters -< e
+       h <- arr (\r -> setParam (white (round (255 * scale * (r*r)))) (select hex12p1 universe)) -< r1
+       p1 <- arr (\r -> setParams (rgbWhite (round (255 * scale * (r*r)))) (select gb_par_1 (select gb_1 universe))) -< r2
+       p2 <- arr (\r -> setParams (rgbWhite (round (255 * scale * (r*r)))) (select gb_par_2 (select gb_1 universe))) -< r3
+       s <- arr (\r -> setParams (rgbWhite (round (255 * scale * (r*r)))) (select slimPar64_1 universe)) -< r4
+       returnA -< mergeParamsL [m, h, p1, p2, s]
+
 
 --       v1 <- arr
 {-  
@@ -779,7 +810,7 @@ modeMap = Map.fromList
   , (14, tanPars)
   , (15, cylon sixteenth (rgbWhite 255))
   , (16, ultraFlicker' quarter 41 1) -- ultraFlicker orange
-  , (17, flickerHSL whole 34 0.54)
+  , (17, flickerHSL whole 34 1) -- flicker orange
   , (18, strobeWhite sixteenth 3)
   , (19, flickerHSL half 0 0)
   , (20, unisonWhitePulse quarter)
@@ -792,6 +823,9 @@ modeMap = Map.fromList
   , (27, slowBlueGreenDerby 40)
   , (28, ultrabarSolid (HSL 240 1 0.5)) -- ultrabar blue
   , (29, ultraFlicker' whole 240 1) -- ultrabar blue flicker
+  , (30, greenDerby 50)
+  , (31, static 1)
+  , (32, static 0.25)
   ]
 
 

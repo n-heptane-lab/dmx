@@ -347,7 +347,6 @@ flickerHSL dur h s =
                             , setParams (hsl $ HSL h s (0.3+(p4*0.2))) (select gb_par_2 (select gb_1 universe))
                             ]
 
-
 unisonWhitePulse dur =
   do proc e ->
        do m <- masters -< e
@@ -453,6 +452,16 @@ blueGreenBackgroundPulse dur =
 --       slim <- pure $ setParams (hsl $ HSL 222 1 0.3) (select slimPar64_1 universe) -< e
        returnA -< mergeParamsL  [m, pars, slim]
 
+blueGreenBackgroundPulse2 :: Int -> MidiLights
+blueGreenBackgroundPulse2 dur =
+  proc e ->
+    do m <- masters -< e
+--       h <- pure $ setParam (uv 255) (select hex12p1 universe) -< e
+       pars <- (lfo Sine dur 0) >>> (arr $ \p -> (setParams (hsl $ HSL  120 1 (0.3 + (p * 0.2)))  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)))) -< e
+       slim <- (lfo Sine dur pi) >>> (arr $ \p -> (setParams (hsl $ HSL 180 1 (0.3 + (p * 0.2))) (select slimPar64_1 universe))) -< e
+--       slim <- pure $ setParams (hsl $ HSL 222 1 0.3) (select slimPar64_1 universe) -< e
+       returnA -< mergeParamsL  [m, pars, slim]
+
 hexUV :: Int -> MidiLights
 hexUV v =
   proc e ->
@@ -525,7 +534,6 @@ gbStatic range holdTime h s =
   proc e ->
        do let par1 = select gb_par_1 (select gb_1 universe)
               par2 = select gb_par_2 (select gb_1 universe)
-          t <- arr fromIntegral <<< time -< ()
           r1 <- randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold -< ()
           r2 <- randomD (mkStdGen 125) (range) >>> periodic holdTime >>> hold -< ()
           m <- masters -< e
@@ -534,11 +542,42 @@ gbStatic range holdTime h s =
                             , setParams (hsl $ HSL h s r2) par2
                             ]
 
+-- hexStatic :: (Double, Double) -> Int -> Double -> Double -> MidiLights
+{-
+hexStatic :: (Random a, SetParam param (Fixture Hex12p_7channel)) =>
+             (a, a)
+          -> Int
+          -> (a -> param)
+          -> MidiLights
+-}
+hexStatic range holdTime f =
+  proc e ->
+       do v <- randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold -< ()
+          m <- masters -< e
+          returnA -< concat [ m
+                            , setParam (f v) (select hex12p1 universe)
+                            ]
+
+slimParStatic range holdTime f =
+  proc e ->
+       do v <- randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold -< ()
+          m <- masters -< e
+          returnA -< concat [ m
+                            , setParam (f v) (select slimPar64_1 universe)
+                            ]
+
 blueishGreenGigBar :: MidiLights
 blueishGreenGigBar =
   proc e ->
     do m <- masters -< e
        pars <- pure $ setParams (hsl $ HSL 181 1 0.5)  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       returnA -< mergeParamsL  [m, pars]
+
+greenishGigBar :: MidiLights
+greenishGigBar =
+  proc e ->
+    do m <- masters -< e
+       pars <- pure $ setParams (hsl $ HSL 140 0.6 0.6)  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
        returnA -< mergeParamsL  [m, pars]
 
 
@@ -549,6 +588,70 @@ blueYellowPars =
        p <- pure $ setParams (hsl (HSL 181 1  0.75)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
        s <- pure $ setParams (hsl (HSL 57 1 0.6)) (select slimPar64_1 universe) -< e
        returnA -< mergeParamsL [ m, p, s ]
+
+rgbDerby :: Word8 -> MidiLights
+rgbDerby v =
+  proc e ->
+    do d1  <- pure (setParams ((derbyCon DerbyConRedGreenBlue) :+: (derbyRotation (DerbyClockwise v))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConRedGreenBlue) :+: (derbyRotation (DerbyCounterClockwise v))) (select gb_derby_2 (select gb_1 universe))) -< e
+       returnA -< mergeParamsL [d1, d2]
+
+unisonHSLPulse h s dur =
+  do proc e ->
+       do m <- masters -< e
+          p1 <- lfo Sine dur 0 -< e
+          v <- arr (\p -> hsl (HSL h s (0.3+(p * 0.2)))) -< p1
+          returnA -< concat [ m
+                            , setParams v (select hex12p1 universe)
+                            , setParams v (select slimPar64_1 universe)
+                            , setParams v (select gb_par_1 (select gb_1 universe))
+                            , setParams v (select gb_par_2 (select gb_1 universe))
+                            ]
+
+purpleTealPars :: MidiLights
+purpleTealPars =
+  proc e ->
+    do m <- masters -< e
+       p <- pure $ setParams (hsl (HSL 285 0.7  0.5)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       s <- pure $ setParams (hsl (HSL 176 0.6 0.5)) (select slimPar64_1 universe) -< e
+       returnA -< mergeParamsL [ m, p, s ]
+
+slimHSLPulse h s dur =
+  do proc e ->
+       do m <- masters -< e
+          p1 <- lfo Sine dur 0 -< e
+          v <- arr (\p -> hsl (HSL h s (0.3+(p * 0.2)))) -< p1
+          returnA -< concat [ m
+                            , setParams v (select gb_par_1 (select gb_1 universe))
+                            , setParams v (select gb_par_2 (select gb_1 universe))
+                            ]
+
+leave u p =
+  let dur = whole * 2
+      maxH = 25
+      minH = 0
+  in
+    proc _ ->
+      do l <- lfo Sine dur p -< ()
+         let a = 15
+             o = 15
+             v' = (l * a) + o
+             h = if v' < 0 then 360 + v' else v'
+         returnA -< setParams (hsl $ HSL h 0.7 0.5) u
+
+leaves =
+  proc e ->
+    do -- f <- flame (select slimPar64_1 universe :+: select ultrabar_1 universe :+: select hex12p1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       f1 <- flame (select slimPar64_1 universe) 0     -< e
+       f2 <- flame (select ultrabar_1 universe) (pi/2) -< e
+       f3 <- flame (select hex12p1 universe)    (pi)   -< e
+       f4 <- flame (select gb_par_1 (select gb_1 universe)) (3*pi/2)   -< e
+       f5 <- flame (select gb_par_2 (select gb_1 universe)) (3*pi/2)   -< e
+--        :+: select ultrabar_1 universe :+: select hex12p1 universe :+: select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)
+       d1  <- pure (setParams ((derbyCon DerbyConRed) :+: (derbyRotation (DerbyClockwise 5))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConRed) :+: (derbyRotation (DerbyCounterClockwise 5))) (select gb_derby_2 (select gb_1 universe))) -< e
+       m <- masters -< e
+       returnA -< mergeParamsL [m, f1, f2, f3, f4, f5, d1, d2]
 
 
 --       v1 <- arr
@@ -897,6 +1000,23 @@ modeMap = Map.fromList
   , (38, gbStatic (0.1, 1) sixteenth 0 0)
   , (39, ultraStatic (0.5,1) thirtysecondth 0 0)
   , (40, blueYellowPars)
+  , (41, rgbDerby 70)
+  , (42, hexStatic (50,255) eighth red)
+  , (43, slimParStatic (50, 255) sixteenth blue)
+  , (44, unisonHSLPulse 170 1 quarter)
+  , (45, ultraFlicker' eighth 298 1 ) -- ultraFlicker' magenta
+  , (46, purpleTealPars)
+  , (47, blueGreenBackgroundPulse2 whole)
+  , (48, ultraFlicker' quarter 160 1) -- ultraFlicker teal
+  , (49, slimHSLPulse 260 1 whole) -- slim purple pulse
+  , (50, hexStatic (0,200) 2 amber)
+  , (51, ultraStatic (0,1) 1 0 0) -- ultraStatic fast
+  , (52, gbStatic (0,0.3) 1 0 0) -- gbStatic fast
+  , (53, greenishGigBar)
+  , (54, ultraFlicker' whole 298 1 ) -- ultraFlicker' magenta
+  , (55, leaves)
+  , (56, hexStatic (0, 200) 2 white) -- hexStatic white
+  , (57, gbStatic (0,0.3) 3 120 1) -- gbStatic green fast
   ]
 
 

@@ -9,7 +9,7 @@ let
         pname = "dmx";
         version = "0.1.0.0";
         src = ./.;
-        libraryHaskellDepends = [ base hmidi mtl netwire random serialport vector QuickCheck ] ++ (with pkgs.darwin.apple_sdk.frameworks; [ CoreAudio CoreMIDI ]);
+        libraryHaskellDepends = [ base hmidi mtl netwire serialport vector QuickCheck ] ++ (with pkgs.darwin.apple_sdk.frameworks; [ CoreAudio CoreMIDI ]);
         license = stdenv.lib.licenses.bsd3;
       };
 

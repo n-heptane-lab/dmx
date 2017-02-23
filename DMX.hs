@@ -40,7 +40,9 @@ import Data.Vector (Vector)
 import qualified Data.Vector as Vector
 import Data.Vector.Mutable (IOVector, write)
 import qualified Data.Vector.Mutable as MVector
-import FRP.Netwire.Move (integral)
+import FRP.Netwire.Analyze (lAvg)
+import FRP.Netwire.Move (derivative, integral)
+import FRP.Netwire.Noise (noiseR)
 import GHC.TypeLits -- (TypeError, ErrorMessage(..), Nat, Symbol, KnownNat(..), natVal, natVal')
 import GHC.Exts
 import Prelude hiding ((.), id, until, mapM)
@@ -280,7 +282,7 @@ tanPars :: MidiLights
 tanPars =
   proc e ->
     do m <- masters -< e
-       t <- pure $ setParams (hsl (HSL 41 0.78  07.3)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       t <- pure $ setParams (hsl (HSL 41 0.78  0.73)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
        returnA -< mergeParamsL [ m, t ]
 
 cylon dur' p =
@@ -409,11 +411,11 @@ redGreen dur =
 
 -- * My Love, My Friend
 
-slowBlueDerby :: MidiLights
-slowBlueDerby =
+blueDerby :: Word8 -> MidiLights
+blueDerby speed =
   proc e ->
-    do d1  <- pure (setParams ((derbyCon DerbyConBlue) :+: (derbyRotation (DerbyClockwise 20))) (select gb_derby_1 (select gb_1 universe))) -< e
-       d2  <- pure (setParams ((derbyCon DerbyConBlue) :+: (derbyRotation (DerbyCounterClockwise 20))) (select gb_derby_2 (select gb_1 universe))) -< e
+    do d1  <- pure (setParams ((derbyCon DerbyConBlue) :+: (derbyRotation (DerbyClockwise speed))) (select gb_derby_1 (select gb_1 universe))) -< e
+       d2  <- pure (setParams ((derbyCon DerbyConBlue) :+: (derbyRotation (DerbyCounterClockwise speed))) (select gb_derby_2 (select gb_1 universe))) -< e
        returnA -< mergeParamsL [d1, d2]
 
 slowBlueGreenDerby :: Word8 -> MidiLights
@@ -486,6 +488,67 @@ static scale =
        p2 <- arr (\r -> setParams (rgbWhite (round (255 * scale * (r*r)))) (select gb_par_2 (select gb_1 universe))) -< r3
        s <- arr (\r -> setParams (rgbWhite (round (255 * scale * (r*r)))) (select slimPar64_1 universe)) -< r4
        returnA -< mergeParamsL [m, h, p1, p2, s]
+
+purplePars :: MidiLights
+purplePars =
+  let purple = hsl $ HSL 274 1 0.5
+  in
+    proc e ->
+      do m  <- masters -< e
+         p1 <- arr (\r -> setParams purple (select gb_par_1 (select gb_1 universe))) -< e
+         p2 <- arr (\r -> setParams purple (select gb_par_2 (select gb_1 universe))) -< e
+         s  <- arr (\r -> setParams purple (select slimPar64_1 universe))            -< e
+         returnA -< mergeParamsL [m, p1, p2, s]
+
+
+ultraStatic :: (Double, Double) -> Int -> Double -> Double -> MidiLights
+ultraStatic range holdTime h s =
+  proc e ->
+       do let ultra = select ultrabar_1 universe
+          t <- arr fromIntegral <<< time -< ()
+          r1 <- randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold -< ()
+          r2 <- randomD (mkStdGen 125) (range) >>> periodic holdTime >>> hold -< ()
+          r3 <- randomD (mkStdGen 121) (range) >>> periodic holdTime >>> hold -< ()
+          r4 <- randomD (mkStdGen 120) (range) >>> periodic holdTime >>> hold -< ()
+          r5 <- randomD (mkStdGen 224) (range) >>> periodic holdTime >>> hold -< ()
+          r6 <- randomD (mkStdGen 502) (range) >>> periodic holdTime >>> hold -< ()
+          returnA -< concat [ setParams (hsl $ HSL h s r1) (select at0 ultra)
+                            , setParams (hsl $ HSL h s r2) (select at1 ultra)
+                            , setParams (hsl $ HSL h s r3) (select at2 ultra)
+                            , setParams (hsl $ HSL h s r4) (select at3 ultra)
+                            , setParams (hsl $ HSL h s r5) (select at4 ultra)
+                            , setParams (hsl $ HSL h s r6) (select at5 ultra)
+                            ]
+
+gbStatic :: (Double, Double) -> Int -> Double -> Double -> MidiLights
+gbStatic range holdTime h s =
+  proc e ->
+       do let par1 = select gb_par_1 (select gb_1 universe)
+              par2 = select gb_par_2 (select gb_1 universe)
+          t <- arr fromIntegral <<< time -< ()
+          r1 <- randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold -< ()
+          r2 <- randomD (mkStdGen 125) (range) >>> periodic holdTime >>> hold -< ()
+          m <- masters -< e
+          returnA -< concat [ m
+                            , setParams (hsl $ HSL h s r1) par1
+                            , setParams (hsl $ HSL h s r2) par2
+                            ]
+
+blueishGreenGigBar :: MidiLights
+blueishGreenGigBar =
+  proc e ->
+    do m <- masters -< e
+       pars <- pure $ setParams (hsl $ HSL 181 1 0.5)  (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       returnA -< mergeParamsL  [m, pars]
+
+
+blueYellowPars :: MidiLights
+blueYellowPars =
+  proc e ->
+    do m <- masters -< e
+       p <- pure $ setParams (hsl (HSL 181 1  0.75)) (select gb_par_1 (select gb_1 universe) :+: select gb_par_2 (select gb_1 universe)) -< e
+       s <- pure $ setParams (hsl (HSL 57 1 0.6)) (select slimPar64_1 universe) -< e
+       returnA -< mergeParamsL [ m, p, s ]
 
 
 --       v1 <- arr
@@ -814,7 +877,7 @@ modeMap = Map.fromList
   , (18, strobeWhite sixteenth 3)
   , (19, flickerHSL half 0 0)
   , (20, unisonWhitePulse quarter)
-  , (21, slowBlueDerby)
+  , (21, blueDerby 20) -- slowBlueDerby
   , (22, ultraFlicker' half 70 0.75) -- ultraFlicker yellow
   , (23, blueGreenBackground)
   , (24, blueGreenBackgroundPulse whole)
@@ -826,6 +889,14 @@ modeMap = Map.fromList
   , (30, greenDerby 50)
   , (31, static 1)
   , (32, static 0.25)
+  , (33, purplePars)
+  , (34, ultraStatic (0.8,1) thirtysecondth 0 0)
+  , (35, blueDerby 200) -- fast BlueDerby
+  , (36, ultraStatic (0.3,1) sixteenth 0 0)
+  , (37, blueishGreenGigBar)
+  , (38, gbStatic (0.1, 1) sixteenth 0 0)
+  , (39, ultraStatic (0.5,1) thirtysecondth 0 0)
+  , (40, blueYellowPars)
   ]
 
 
@@ -1508,4 +1579,5 @@ main =
      bracket (createDestination "DMX" (Just $ callback queue)) (\c -> putStrLn "disposing of connection." >> disposeConnection c) $ \midiIn ->
        bracket_ (start midiIn) (putStrLn "closing midi" >> MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
-         do runShow queue (serialOutput s) beatSession (midiModes modeMap)
+         do putStrLn "running..."
+            runShow queue (serialOutput s) beatSession (midiModes modeMap)

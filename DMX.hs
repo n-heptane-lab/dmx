@@ -208,12 +208,12 @@ masters :: MidiLights
 masters =
   let par1 = (select gb_par_1 (select gb_1 universe))
       par2 = (select gb_par_2 (select gb_1 universe))
-      laser = select gb_laser (select gb_1 universe)
+--      laser = select gb_laser (select gb_1 universe)
   in proc e ->
       do m1  <- pure $ setParam (master 255) (select slimPar64_1 universe :+: select hex12p1 universe) -< e
          m2  <- pure $ setParam (parCon $ ParConRGB 127) (par1 :+: par2) -< e
-         l  <- laserOff laser -< e
-         returnA -< mergeParamsL [l, m1, m2]
+--         l  <- laserOff laser -< e
+         returnA -< mergeParamsL [m1, m2]
 
 flames =
   proc e ->
@@ -1017,6 +1017,7 @@ modeMap = Map.fromList
   , (55, leaves)
   , (56, hexStatic (0, 200) 2 white) -- hexStatic white
   , (57, gbStatic (0,0.3) 3 120 1) -- gbStatic green fast
+  , (58, gbLasers1)
   ]
 
 
@@ -1611,10 +1612,10 @@ gbLaserColors lzr =
   in for dur . pure (sp GBLaserRed lzr) -->
      for dur . pure (sp GBLaserGreen lzr) -->
      for dur . pure (sp GBLaserRedGreen lzr) -->
-     for dur . pure (sp GBLaserRedGreenStrobe lzr) -->
-     for dur . pure (sp GBLaserRedStrobeGreen lzr) -->
-     for dur . pure (sp GBLaserRedGreenAlternate lzr) -->
-     for dur . pure (sp GBLaserBlackout lzr) -->
+--     for dur . pure (sp GBLaserRedGreenStrobe lzr) -->
+--     for dur . pure (sp GBLaserRedStrobeGreen lzr) -->
+--     for dur . pure (sp GBLaserRedGreenAlternate lzr) -->
+--     for dur . pure (sp GBLaserBlackout lzr) -->
      gbLaserColors lzr
 
 laserStrobe lzr =
@@ -1639,9 +1640,9 @@ gbLasers1 =
   let lzr = select gb_laser (select gb_1 universe)
   in proc e ->
        do c <- gbLasers lzr -< e
-          s <- laserStrobe lzr -< e
+--          s <- laserStrobe lzr -< e
           p <- laserPattern lzr -< e
-          returnA -< mergeParamsL [c,s,p]
+          returnA -< mergeParamsL [c,p]
 
 strobePattern lzr =
   pure $ setParam (gbStrobePattern GBStrobeAuto9) lzr

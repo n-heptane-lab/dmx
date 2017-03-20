@@ -12,7 +12,7 @@
 {-# language Arrows #-}
 module Main where
 
-import CatSequences (cylon, cylon2, cylon3, delay', masters, strobeWhite, hex12p_1, hex12p_2, ultrabar_1, ultrabar_2, universe)
+import CatSequences (cylon, cylon2, cylon3, masters, strobeWhite, hex12p_1, hex12p_2, hslRed, hslRedOrange, hslBlue, hslCyan, hslPink, hslBlack, randomUltra, randomUltra2, ultraAlternate, ultrabar_1, ultrabar_2, universe)
 import Color (HSL(..), RGB(..), hsl2rgb, rgb2hsl, rgb_d2w)
 import Core
 import Control.Concurrent (forkIO, threadDelay)
@@ -128,9 +128,13 @@ modeMap = Map.fromList
 catInTheBoxModes :: Map Int MidiLights
 catInTheBoxModes = Map.fromList
   [ (0, strobeWhite quarter 3 (select hex12p_1 universe :+: select hex12p_2 universe) )
-  , (1, (cylon3 (eighth) (hsl $ HSL 0 1 0.5) (select ultrabar_1 universe) >>> delay' eighth 0.25 ))
-  , (2, (cylon3 (eighth) (hsl $ HSL 0 1 0.5) (Mirrored $ select ultrabar_2 universe) >>> delay' eighth 0.25))
+  , (1, (cylon3 (eighth) hslCyan (select ultrabar_1 universe) >>> delay' eighth 0.25 ))
+  , (2, (cylon3 (eighth) hslPink (Mirrored $ select ultrabar_2 universe) >>> delay' eighth 0.25))
   , (3, (cylon3 (eighth) (hsl $ HSL 240 1 0.5) (Mirrored $ select ultrabar_1 universe) >>> delay' eighth 0.25))
+  , (4, (randomUltra [hslBlack, hslRed, hslBlue, hslCyan, hslPink] quarter universe))
+  , (5, (randomUltra2 [hslBlack, hslRed, hslBlue, hslCyan, hslPink] eighth eighth universe))
+  , (6, (randomUltra [hslRed, hslBlue, hslCyan, hslPink, hslBlack] eighth universe))
+  , (7, (ultraAlternate hslRedOrange hslBlue eighth universe))
   ]
 
 ------------------------------------------------------------------------

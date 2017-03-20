@@ -32,6 +32,8 @@ import Data.Foldable       (asum, foldMap)
 import Data.List (sort, maximum, groupBy)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Sequence (Seq, (<|), ViewR(..), viewr)
+import qualified Data.Sequence as Seq
 import Data.Traversable (mapAccumR, mapM)
 import Data.Monoid ((<>))
 import Data.Word (Word8, Word16)
@@ -178,13 +180,34 @@ lfo (PWM onTime) period _ = -- FIXME phase
         (for (onTime + 1) . pure 1) --> (for ((period - onTime) + 1) . pure 0) --> loop
   in loop
 
+delay' :: Int -> Double -> MidiWire Output Output
+delay' dur feedback = loop $ initDelay >>> go
+  where
+    mapParam :: (Word8 -> Word8) -> Param p -> Param p
+    mapParam f (Param v) = (Param (f v))
+
+    fdbk :: (Address, Word8) -> (Address, Word8)
+    fdbk (addr, v) = (addr, round ((fromIntegral v) * feedback))
+
+    initDelay :: MidiWire (Output, Seq Output) (Output, Seq Output)
+    initDelay = second (delay (Seq.replicate dur []))
+
+    go :: MidiWire (Output, Seq Output)  (Output, Seq Output)
+    go =
+      (proc (params, mem) ->
+         returnA -<
+           case viewr mem of
+             (mem' :> delayedParams) ->
+               let params' = mergeParams params delayedParams
+                   mem'' = (map fdbk params') <| mem'
+               in (params', mem'')) --> go
+
 randomD :: (Random a) => StdGen -> (a, a) -> MidiWire x a
 randomD initGen range =
   (loop $ proc (_, gen) ->
      do g <- delay initGen -< gen
         let (d, gen') = randomR range g
         returnA -< (d, gen'))
-
 
 data Labeled (name :: Symbol) a = Labeled a
 

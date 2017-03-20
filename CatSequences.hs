@@ -11,14 +11,13 @@ import Control.Wire.Core
 import Core
 import Color (HSL(..), RGB(..), hsl2rgb, rgb2hsl, rgb_d2w)
 import Data.Proxy (Proxy(..))
-import Data.Sequence (Seq, (<|), ViewR(..), viewr)
-import qualified Data.Sequence as Seq
 import Data.Word (Word8)
 import Data.Vector.Mutable (IOVector, write)
 import qualified Data.Vector.Mutable as MVector
 import Hex12p
 import Prelude hiding ((.), id, until, mapM)
 import Ultrabar
+import System.Random (Random, StdGen, mkStdGen, randomR)
 
 ------------------------------------------------------------------------
 -- Hex 12P
@@ -76,6 +75,17 @@ type Universe = Def_Hex12p_1 :+: Def_Hex12p_2 :+: Def_Ultrabar_1 :+: Def_Ultraba
 
 universe :: Universe
 universe = def_hex12p_1 :+: def_hex12p_2 :+: def_ultrabar_1 :+: def_ultrabar_2
+
+------------------------------------------------------------------------
+-- Colors
+------------------------------------------------------------------------
+
+hslRed       = hsl $ HSL   0 1 0.5
+hslRedOrange = hsl $ HSL  15 1 0.5
+hslBlue      = hsl $ HSL 240 1 0.5
+hslCyan      = hsl $ HSL 190 1 0.5
+hslPink      = hsl $ HSL 320 1 0.5
+hslBlack     = hsl $ HSL 0 1 0
 
 ------------------------------------------------------------------------
 -- Sequences
@@ -161,24 +171,82 @@ cylon3 dur' p ultra =
   in (for dur . pure (setParams p (select at5 ultra))) -->
      cylon3 dur' p ultra
 -}
-delay' :: Int -> Double -> MidiWire Output Output
-delay' dur feedback = loop $ initDelay >>> go
-  where
-    mapParam :: (Word8 -> Word8) -> Param p -> Param p
-    mapParam f (Param v) = (Param (f v))
 
-    fdbk :: (Address, Word8) -> (Address, Word8)
-    fdbk (addr, v) = (addr, round ((fromIntegral v) * feedback))
 
-    initDelay :: MidiWire (Output, Seq Output) (Output, Seq Output)
-    initDelay = second (delay (Seq.replicate dur []))
+randomUltra :: [Param 'Red :+: Param 'Green :+: Param 'Blue] -> Int -> Universe -> MidiLights
+randomUltra options holdTime universe =
+  let range = (0, (length options) - 1)
+      ultra1 = select ultrabar_1 universe
+      ultra2 = select ultrabar_2 universe
+  in
+  proc e ->
+       do r0  <- randomD (mkStdGen 602) (range) >>> periodic holdTime >>> hold -< ()
+          r1  <- randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold -< ()
+          r2  <- randomD (mkStdGen 125) (range) >>> periodic holdTime >>> hold -< ()
+          r3  <- randomD (mkStdGen 121) (range) >>> periodic holdTime >>> hold -< ()
+          r4  <- randomD (mkStdGen 120) (range) >>> periodic holdTime >>> hold -< ()
+          r5  <- randomD (mkStdGen 224) (range) >>> periodic holdTime >>> hold -< ()
+          r6  <- randomD (mkStdGen 502) (range) >>> periodic holdTime >>> hold -< ()
+          r7  <- randomD (mkStdGen 223) (range) >>> periodic holdTime >>> hold -< ()
+          r8  <- randomD (mkStdGen 225) (range) >>> periodic holdTime >>> hold -< ()
+          r9  <- randomD (mkStdGen 221) (range) >>> periodic holdTime >>> hold -< ()
+          r10 <- randomD (mkStdGen 220) (range) >>> periodic holdTime >>> hold -< ()
+          r11 <- randomD (mkStdGen 324) (range) >>> periodic holdTime >>> hold -< ()
 
-    go :: MidiWire (Output, Seq Output)  (Output, Seq Output)
-    go =
-      (proc (params, mem) ->
-         returnA -<
-           case viewr mem of
-             (mem' :> delayedParams) ->
-               let params' = mergeParams params delayedParams
-                   mem'' = (map fdbk params') <| mem'
-               in (params', mem'')) --> go
+          returnA -< concat [ setParams (options!!r0)  (select at0 ultra1)
+                            , setParams (options!!r1)  (select at1 ultra1)
+                            , setParams (options!!r2)  (select at2 ultra1)
+                            , setParams (options!!r3)  (select at3 ultra1)
+                            , setParams (options!!r4)  (select at4 ultra1)
+                            , setParams (options!!r5)  (select at5 ultra1)
+                            , setParams (options!!r6)  (select at0 ultra2)
+                            , setParams (options!!r7)  (select at1 ultra2)
+                            , setParams (options!!r8)  (select at2 ultra2)
+                            , setParams (options!!r9)  (select at3 ultra2)
+                            , setParams (options!!r10) (select at4 ultra2)
+                            , setParams (options!!r11) (select at5 ultra2)
+                            ]
+
+randomUltra2 :: [Param 'Red :+: Param 'Green :+: Param 'Blue] -> Int -> Int -> Universe -> MidiLights
+randomUltra2 options holdTime offTime universe =
+  let range = (0, (length options) - 1)
+      ultra1 = select ultrabar_1 universe
+      ultra2 = select ultrabar_2 universe
+      blink v = v >>> blink'
+      blink' = for (holdTime + 1) . id --> for (offTime + 1) . pure 0 --> blink'
+  in
+  proc e ->
+       do r0  <- blink (randomD (mkStdGen 602) (range) >>> periodic holdTime >>> hold) -< ()
+          r1  <- blink (randomD (mkStdGen 123) (range) >>> periodic holdTime >>> hold) -< ()
+          r2  <- blink (randomD (mkStdGen 125) (range) >>> periodic holdTime >>> hold) -< ()
+          r3  <- blink (randomD (mkStdGen 121) (range) >>> periodic holdTime >>> hold) -< ()
+          r4  <- blink (randomD (mkStdGen 120) (range) >>> periodic holdTime >>> hold) -< ()
+          r5  <- blink (randomD (mkStdGen 224) (range) >>> periodic holdTime >>> hold) -< ()
+          r6  <- blink (randomD (mkStdGen 502) (range) >>> periodic holdTime >>> hold) -< ()
+          r7  <- blink (randomD (mkStdGen 223) (range) >>> periodic holdTime >>> hold) -< ()
+          r8  <- blink (randomD (mkStdGen 225) (range) >>> periodic holdTime >>> hold) -< ()
+          r9  <- blink (randomD (mkStdGen 221) (range) >>> periodic holdTime >>> hold) -< ()
+          r10 <- blink (randomD (mkStdGen 220) (range) >>> periodic holdTime >>> hold) -< ()
+          r11 <- blink (randomD (mkStdGen 324) (range) >>> periodic holdTime >>> hold) -< ()
+
+          returnA -< concat [ setParams (options!!r0)  (select at0 ultra1)
+                            , setParams (options!!r1)  (select at1 ultra1)
+                            , setParams (options!!r2)  (select at2 ultra1)
+                            , setParams (options!!r3)  (select at3 ultra1)
+                            , setParams (options!!r4)  (select at4 ultra1)
+                            , setParams (options!!r5)  (select at5 ultra1)
+                            , setParams (options!!r6)  (select at0 ultra2)
+                            , setParams (options!!r7)  (select at1 ultra2)
+                            , setParams (options!!r8)  (select at2 ultra2)
+                            , setParams (options!!r9)  (select at3 ultra2)
+                            , setParams (options!!r10) (select at4 ultra2)
+                            , setParams (options!!r11) (select at5 ultra2)
+                            ]
+
+ultraAlternate :: (Param 'Red :+: Param 'Green :+: Param 'Blue) -> (Param 'Red :+: Param 'Green :+: Param 'Blue) -> Int -> Universe -> MidiLights
+ultraAlternate left right duration' universe =
+  let duration = duration' + 1
+  in
+    for duration . pure (setParams left (select ultrabar_1 universe)) -->
+    for duration . pure (setParams right (select ultrabar_2 universe)) -->
+    ultraAlternate left right duration' universe

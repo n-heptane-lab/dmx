@@ -365,6 +365,7 @@ strobeWhite dur p =
        p <- lfo (PWM p) dur 0 -< e
        returnA -< concat [ m
                          , setParam (white (128 + round (p * 127))) (select hex12p1 universe)
+--                         , setParam (white (128 + round (p * 127))) (select hex12p2 universe)
                          ]
 pulseWhite dur =
   proc e ->
@@ -1158,7 +1159,7 @@ serialOutput port params = liftIO $
          -- print vals
          -- print vals
          -- print (B.length (B.pack $ stuff vals))
-         -- print (stuff vals)
+         print (stuff vals)
 
          sendAll port (B.pack $ stuff vals)
 --         Serialport.flush port

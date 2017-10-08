@@ -90,7 +90,7 @@ hslBlack     = hsl $ HSL 0 1 0
 ------------------------------------------------------------------------
 -- Sequences
 ------------------------------------------------------------------------
-
+{-
 masters :: (SetParam 'Master (SubUniverse Hex12p_1 u), Select Hex12p_1 u, SetParam 'Master (SubUniverse Hex12p_2 u), Select Hex12p_2 u) =>
            u -> MidiLights
 masters u =
@@ -99,17 +99,23 @@ masters u =
   in proc e ->
        do m <- pure $ setParam (master 255) (h1 :+: h2) -< e
           returnA -< m
-strobeWhite
-  :: (SetParam 'Master universe,
-      SetParam 'White universe) =>
-     Int -> Int -> universe -> MidiLights
-strobeWhite dur p su =
+-}
+masters :: MidiLights
+masters =
+  proc e ->
+      do m1  <- pure $ setParam (master 255) (select hex12p_1 universe :+: select hex12p_2 universe) -< e
+         returnA -< mergeParamsL [m1]
+
+strobeWhite :: Int -> Int -> MidiLights
+strobeWhite dur p =
   proc e ->
     do -- m <- masters su -< e
+       m <- masters -< e
        p <- lfo (PWM p) dur 0 -< e
-       returnA -< mergeParamsL [ setParam (white (round (p * 255))) su
-                               , setParam (master 255) su
-                               ]
+       returnA -< concat [ m
+                         , setParam (white (round (p * 255))) (select hex12p_1 universe)
+                         , setParam (white (round (p * 255))) (select hex12p_2 universe)
+                         ]
 
 cylon dur' p ultra =
   let dur = dur' + 1

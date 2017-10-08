@@ -127,7 +127,7 @@ modeMap = Map.fromList
 
 catInTheBoxModes :: Map Int MidiLights
 catInTheBoxModes = Map.fromList
-  [ (0, strobeWhite quarter 3 (select hex12p_1 universe :+: select hex12p_2 universe) )
+  [ (0, strobeWhite quarter 3)
   , (1, (cylon3 (eighth) hslCyan (select ultrabar_1 universe) >>> delay' eighth 0.25 ))
   , (2, (cylon3 (eighth) hslPink (Mirrored $ select ultrabar_2 universe) >>> delay' eighth 0.25))
   , (3, (cylon3 (eighth) (hsl $ HSL 240 1 0.5) (Mirrored $ select ultrabar_1 universe) >>> delay' eighth 0.25))

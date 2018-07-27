@@ -11,8 +11,8 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:     DMX
-  build-depends:       base >=4.9 && <4.10,
+  build-depends:       base >=4.9 && <4.12,
                        hmidi,
-                       vector >=0.11 && <0.12,
+                       vector >=0.11 && <0.13,
                        serialport >= 0.4  && < 0.5
   default-language:    Haskell2010

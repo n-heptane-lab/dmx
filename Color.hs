@@ -6,8 +6,9 @@ import Data.Monoid    (mappend)
 import Data.Semigroup (Semigroup, (<>))
 import Data.Vector    (Vector)
 import Data.Word      (Word8)
+{-
 import Test.QuickCheck.Arbitrary (Arbitrary(..))
-
+-}
 -- | an RGB value
 data RGB a = RGB
   { r :: a
@@ -18,13 +19,13 @@ data RGB a = RGB
 instance (Num a) => Semigroup (RGB a) where
   (RGB r0 g0 b0) <> (RGB r1 g1 b1) =
     RGB (r0 + r1) (g0 + g1) (b0 + b1)
-
+{-
 instance Arbitrary (RGB Word8) where
   arbitrary = RGB <$> arbitrary <*> arbitrary <*> arbitrary
 
 instance Arbitrary (RGB Double) where
   arbitrary = rgb_w2d <$> arbitrary
-
+-}
 rgb_w2d :: RGB Word8 -> RGB Double
 rgb_w2d (RGB r g b) = RGB (w2d r) (w2d g) (w2d b)
   where

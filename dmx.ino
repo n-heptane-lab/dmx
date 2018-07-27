@@ -69,10 +69,10 @@ void unstuff(const unsigned char *src, unsigned char *dst) {
 
 void setup() {
   pinMode(LED_PIN, OUTPUT);
-  // flash once to show we turned on
-  //  digitalWrite(LED_PIN, HIGH);
-  //  delay(200);
-  //  digitalWrite(LED_PIN, LOW);
+   // flash once to show we turned on
+    digitalWrite(LED_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
 
   Serial.begin(115200); // FIXME: baud rate seems a bit low ?
   initDMX();

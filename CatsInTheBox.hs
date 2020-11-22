@@ -12,7 +12,7 @@
 {-# language Arrows #-}
 module Main where
 
-import CatSequences (cylon, cylon2, cylon3, masters, strobeWhite, hex12p_1, hex12p_2, hslRed, hslRedOrange, hslBlue, hslCyan, hslPink, hslBlack, randomUltra, randomUltra2, ultraAlternate, ultrabar_1, ultrabar_2, universe)
+import CatSequences (cylon, cylon2, cylon3, masters, strobeWhite, hex12p_1, hex12p_2, hslRed, hslRedOrange, hslBlue, hslCyan, hslPurple, hslPink, hslYellow, hslGreen, hslBlack, randomUltra, randomUltra2, ultraAlternate, ultrabar_1, ultrabar_2, universe, ultra1234, ultra1234_accum, ultra12345678, pong2, redBlueU, pulsar)
 import Color (HSL(..), RGB(..), hsl2rgb, rgb2hsl, rgb_d2w)
 import Core
 import Control.Concurrent (forkIO, threadDelay)
@@ -148,4 +148,24 @@ main =
        bracket_ (start midiIn) (putStrLn "closing midi" >> MIDI.close midiIn) $
         withSerial dmxPort dmxBaud $ \s ->
          do putStrLn "running..."
-            runShow queue (serialOutput s) beatSession (midiModes catInTheBoxModes)
+--            runShow queue (serialOutput s) beatSession (midiModes catInTheBoxModes)
+            runShow queue (serialOutput s) beatSession $
+             proc e ->
+               do -- c1 <- (cylon3 (eighth) hslCyan (select ultrabar_1 universe) >>> delay' eighth 0.25)  -< e
+--                  c2 <- (cylon3 (eighth) hslPink (Mirrored $ select ultrabar_2 universe) >>> delay' eighth 0.25) -< e
+--                  c2 <- (cylon3 (eighth) hslPink (Mirrored $ select ultrabar_2 universe)) -< e
+--                  c1 <- (ultra1234_accum (quarter) (hslPink, hslPink, hslCyan, hslCyan, hslYellow, hslYellow)  (select ultrabar_1 universe)) -< e
+--                  c2 <- (ultra1234 (quarter) (hslPink, hslPink, hslCyan, hslCyan, hslYellow, hslYellow)  (select ultrabar_2 universe)) -< e
+--                  c2 <- (ultra12345678 (eighth) (hslGreen, hslGreen, hslGreen, hslGreen, hslGreen, hslGreen)  (Mirrored $ (select ultrabar_2 universe))  >>> delay' eighth 0.25) -< e
+--                  c2' <- (ultra12345678 (eighth) (hslPurple, hslPurple, hslPurple, hslPurple, hslPurple, hslPurple)  ((select ultrabar_2 universe)) ) -< e
+                  u1 <- (pong2 (sixteenth) (hslRed, hslRed)  (select ultrabar_2 universe)) -< e
+                  u2 <- (pong2 (sixteenth) (hslRed, hslRed)  (select ultrabar_1 universe)) -< e
+--                  c3 <- strobeWhite quarter 10 -< e
+                  h1 <- redBlueU (select hex12p_1 universe) -< e
+--                  h2 <- redBlueU (select hex12p_2 universe) >>> delay'' quarter 1 -< e
+--                  h2 <- redBlueU (select hex12p_2 universe) -< e
+                  m <- masters -< e
+                  h <- pulsar (select hex12p_1 universe  :+: select hex12p_2 universe ) -< e
+                  returnA -< mergeParamsL [m, h, u1, u2]
+
+

@@ -3,3 +3,5 @@
 *.hi
 .cabal-sandbox
 .gcroots
+dmx
+dmx-new

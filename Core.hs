@@ -202,6 +202,28 @@ delay' dur feedback = loop $ initDelay >>> go
                    mem'' = (map fdbk params') <| mem'
                in (params', mem'')) --> go
 
+delay'' :: Int -> Double -> MidiWire Output Output
+delay'' dur feedback = loop $ initDelay >>> go
+  where
+    mapParam :: (Word8 -> Word8) -> Param p -> Param p
+    mapParam f (Param v) = (Param (f v))
+
+    fdbk :: (Address, Word8) -> (Address, Word8)
+    fdbk (addr, v) = (addr, round ((fromIntegral v) * feedback))
+
+    initDelay :: MidiWire (Output, Seq Output) (Output, Seq Output)
+    initDelay = second (delay (Seq.replicate dur []))
+
+    go :: MidiWire (Output, Seq Output)  (Output, Seq Output)
+    go =
+      (proc (params, mem) ->
+         returnA -<
+           case viewr mem of
+             (mem' :> delayedParams) ->
+               let params' = {- mergeParams params -} delayedParams
+                   mem'' = (map fdbk params) <| mem'
+               in (params', mem'')) --> go
+
 randomD :: (Random a) => StdGen -> (a, a) -> MidiWire x a
 randomD initGen range =
   (loop $ proc (_, gen) ->

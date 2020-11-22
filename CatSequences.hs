@@ -82,10 +82,13 @@ universe = def_hex12p_1 :+: def_hex12p_2 :+: def_ultrabar_1 :+: def_ultrabar_2
 
 hslRed       = hsl $ HSL   0 1 0.5
 hslRedOrange = hsl $ HSL  15 1 0.5
-hslBlue      = hsl $ HSL 240 1 0.5
+hslYellow    = hsl $ HSL  60 1 0.5
+hslGreen     = hsl $ HSL 120 1 0.3
 hslCyan      = hsl $ HSL 190 1 0.5
+hslBlue      = hsl $ HSL 240 1 0.5
+hslPurple    = hsl $ HSL 280 1 0.5
 hslPink      = hsl $ HSL 320 1 0.5
-hslBlack     = hsl $ HSL 0 1 0
+hslBlack     = hsl $ HSL   0 1 0
 
 ------------------------------------------------------------------------
 -- Sequences
@@ -170,6 +173,75 @@ cylon3 dur' p ultra =
      (for dur . pure []) -->
 
      cylon3 dur' p ultra
+
+ultra1234_accum dur' ps@(p0, p1, p2, p3, p4, p5) ultra =
+  let dur  = dur' + 1
+  in (for dur . pure []) -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at0 ultra)
+                                   , setParams p1 (select at1 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at0 ultra)
+                                   , setParams p1 (select at1 ultra)
+                                   , setParams p2 (select at2 ultra)
+                                   , setParams p3 (select at3 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at0 ultra)
+                                   , setParams p1 (select at1 ultra)
+                                   , setParams p2 (select at2 ultra)
+                                   , setParams p3 (select at3 ultra)
+                                   , setParams p4 (select at4 ultra)
+                                   , setParams p5 (select at5 ultra)
+                                   ]))  -->
+     ultra1234_accum dur' ps ultra
+
+ultra1234 dur' p ultra =
+  let dur  = dur' + 1
+  in (for dur . pure (setParams p (select at0 ultra))) -->
+     (for dur . pure (setParams p (select at1 ultra))) -->
+     (for dur . pure (setParams p (select at2 ultra))) -->
+     (for dur . pure (setParams p (select at3 ultra))) -->
+     ultra1234 dur' p ultra
+
+ultra12345678 dur' ps@(p0, p1, p2, p3, p4, p5)  ultra =
+  let dur  = dur' + 1
+  in (for dur . pure (setParams p0 (select at0 ultra))) -->
+     (for dur . pure (setParams p1 (select at1 ultra))) -->
+     (for dur . pure (setParams p2 (select at2 ultra))) -->
+     (for dur . pure (setParams p3 (select at3 ultra))) -->
+     (for dur . pure (setParams p4 (select at4 ultra))) -->
+     (for dur . pure (setParams p5 (select at5 ultra))) -->
+     (for (dur * 2) . pure []) -->
+     ultra12345678 dur' ps ultra
+
+
+pong2 dur' ps@(p0, p1) ultra =
+  let dur  = dur' + 1
+  in (for dur . pure (mergeParamsL [ setParams p0 (select at0 ultra)
+                                   , setParams p1 (select at1 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at1 ultra)
+                                   , setParams p1 (select at2 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at2 ultra)
+                                   , setParams p1 (select at3 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at3 ultra)
+                                   , setParams p1 (select at4 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at4 ultra)
+                                   , setParams p1 (select at5 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at3 ultra)
+                                   , setParams p1 (select at4 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at2 ultra)
+                                   , setParams p1 (select at3 ultra)
+                                   ]))  -->
+     (for dur . pure (mergeParamsL [ setParams p0 (select at1 ultra)
+                                   , setParams p1 (select at2 ultra)
+                                   ]))  -->
+     pong2 dur' ps ultra
+
 
 {-
 cylon3 dur' p ultra =
@@ -256,3 +328,35 @@ ultraAlternate left right duration' universe =
     for duration . pure (setParams left (select ultrabar_1 universe)) -->
     for duration . pure (setParams right (select ultrabar_2 universe)) -->
     ultraAlternate left right duration' universe
+
+
+-- * Hex
+{-
+redBlue :: universe MidiLights
+redBlue =
+  let dur = quarter + 1
+      u = (select hex12p1 universe)
+  in
+  for dur . pure (concat [setParam (red 255) u, setParam (master 255) u]) -->
+  for dur . pure (concat [setParam (blue 255) u, setParam (master 255) u]) -->
+  redBlue
+-} 
+-- redBlueU :: (SetParam 'Red universe, SetParam 'Blue universe) => universe -> MidiLights
+redBlueU u =
+  let dur = quarter + 1 in
+  for dur . pure (setParams hslRed u) -->
+  for dur . pure (setParams hslBlue u) -->
+  redBlueU u
+
+
+pulsar u =
+  (for (quarter + 1) .
+     proc midi ->
+       do t <- time -< ()
+          returnA -< (setParam (red (fromIntegral (t * 10))) u)) -->
+  (for (quarter + 1) .
+     proc midi ->
+       do t <- time -< ()
+          returnA -< (setParam (red (fromIntegral (255 - (t*10)))) u)) -->
+  pulsar u
+
